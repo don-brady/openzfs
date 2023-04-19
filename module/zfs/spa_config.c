@@ -590,7 +590,7 @@ spa_config_update_complete(spa_t *spa, uint64_t txg, boolean_t postsysevent,
 		 * safe even if one or more of them are suspended.
 		 */
 		mutex_enter(&spa_namespace_lock);
-		spa_write_cachefile(spa, B_FALSE, postsysevent);
+		spa_write_cachefile(spa, B_FALSE, postsysevent, postsysevent);
 		mutex_exit(&spa_namespace_lock);
 	}
 
