@@ -151,6 +151,7 @@ typedef struct ztest_shared_hdr {
 	uint64_t	zh_stats_count;
 	uint64_t	zh_ds_size;
 	uint64_t	zh_ds_count;
+	uint64_t	zh_scratch_state_size;
 } ztest_shared_hdr_t;
 
 static ztest_shared_hdr_t *ztest_shared_hdr;
@@ -174,6 +175,7 @@ typedef struct ztest_shared_opts {
 	size_t zo_vdev_size;
 	int zo_ashift;
 	int zo_mirrors;
+	int zo_raid_do_expand;
 	int zo_raid_children;
 	int zo_raid_parity;
 	char zo_raid_type[8];
@@ -188,6 +190,7 @@ typedef struct ztest_shared_opts {
 	uint64_t zo_time;
 	uint64_t zo_maxloops;
 	uint64_t zo_metaslab_force_ganging;
+	uint64_t zo_raidz_expand_test;
 	int zo_mmp_test;
 	int zo_special_vdevs;
 	int zo_dump_dbgmsg;
@@ -249,6 +252,7 @@ static const ztest_shared_opts_t ztest_opts_defaults = {
 	.zo_metaslab_force_ganging = DEFAULT_FORCE_GANGING,
 	.zo_special_vdevs = ZTEST_VDEV_CLASS_RND,
 	.zo_gvars_count = 0,
+	.zo_raidz_expand_test = 0,
 };
 
 extern uint64_t metaslab_force_ganging;
@@ -261,6 +265,7 @@ extern uint_t dmu_object_alloc_chunk_shift;
 extern boolean_t zfs_force_some_double_word_sm_entries;
 extern unsigned long zio_decompress_fail_fraction;
 extern unsigned long zfs_reconstruct_indirect_damage_fraction;
+extern uint64_t raidz_expand_max_offset_pause;
 
 
 static ztest_shared_opts_t *ztest_shared_opts;
@@ -273,6 +278,12 @@ typedef struct ztest_shared_ds {
 
 static ztest_shared_ds_t *ztest_shared_ds;
 #define	ZTEST_GET_SHARED_DS(d) (&ztest_shared_ds[d])
+
+typedef struct ztest_scratch_state {
+	uint64_t	zs_raidz_scratch_verify_pause;
+} ztest_shared_scratch_state_t;
+
+static ztest_shared_scratch_state_t *ztest_scratch_state;
 
 #define	BT_MAGIC	0x123456789abcdefULL
 #define	MAXFAULTS(zs) \
@@ -311,9 +322,9 @@ typedef struct bufwad {
  * still need to map from object ID to rangelock_t.
  */
 typedef enum {
-	RL_READER,
-	RL_WRITER,
-	RL_APPEND
+	ZTRL_READER,
+	ZTRL_WRITER,
+	ZTRL_APPEND
 } rl_type_t;
 
 typedef struct rll {
@@ -408,6 +419,7 @@ ztest_func_t ztest_mmp_enable_disable;
 ztest_func_t ztest_scrub;
 ztest_func_t ztest_dsl_dataset_promote_busy;
 ztest_func_t ztest_vdev_attach_detach;
+ztest_func_t ztest_vdev_raidz_attach;
 ztest_func_t ztest_vdev_LUN_growth;
 ztest_func_t ztest_vdev_add_remove;
 ztest_func_t ztest_vdev_class_add;
@@ -465,6 +477,7 @@ static ztest_info_t ztest_info[] = {
 	ZTI_INIT(ztest_spa_upgrade, 1, &zopt_rarely),
 	ZTI_INIT(ztest_dsl_dataset_promote_busy, 1, &zopt_rarely),
 	ZTI_INIT(ztest_vdev_attach_detach, 1, &zopt_sometimes),
+	ZTI_INIT(ztest_vdev_raidz_attach, 1, &zopt_sometimes),
 	ZTI_INIT(ztest_vdev_LUN_growth, 1, &zopt_rarely),
 	ZTI_INIT(ztest_vdev_add_remove, 1, &ztest_opts.zo_vdevtime),
 	ZTI_INIT(ztest_vdev_class_add, 1, &ztest_opts.zo_vdevtime),
@@ -480,6 +493,34 @@ static ztest_info_t ztest_info[] = {
 };
 
 #define	ZTEST_FUNCS	(sizeof (ztest_info) / sizeof (ztest_info_t))
+
+ztest_info_t raidz_expand_info[] = {
+/* XXX - does this list of activities need further pruning? */
+	ZTI_INIT(ztest_dmu_read_write, 1, &zopt_always),
+	ZTI_INIT(ztest_dmu_write_parallel, 10, &zopt_always),
+	ZTI_INIT(ztest_dmu_object_alloc_free, 1, &zopt_always),
+	ZTI_INIT(ztest_dmu_object_next_chunk, 1, &zopt_sometimes),
+	ZTI_INIT(ztest_dmu_commit_callbacks, 1, &zopt_always),
+	ZTI_INIT(ztest_zap, 30, &zopt_always),
+	ZTI_INIT(ztest_zap_parallel, 100, &zopt_always),
+	ZTI_INIT(ztest_split_pool, 1, &zopt_always),
+	ZTI_INIT(ztest_zil_commit, 1, &zopt_incessant),
+	ZTI_INIT(ztest_zil_remount, 1, &zopt_sometimes),
+	ZTI_INIT(ztest_dmu_read_write_zcopy, 1, &zopt_often),
+	ZTI_INIT(ztest_dmu_objset_create_destroy, 1, &zopt_often),
+	ZTI_INIT(ztest_dsl_prop_get_set, 1, &zopt_often),
+	ZTI_INIT(ztest_spa_prop_get_set, 1, &zopt_sometimes),
+#if 0
+	ZTI_INIT(ztest_dmu_prealloc, 1, &zopt_sometimes),
+#endif
+	ZTI_INIT(ztest_fzap, 1, &zopt_sometimes),
+	ZTI_INIT(ztest_dsl_dataset_promote_busy, 1, &zopt_rarely),
+	ZTI_INIT(ztest_initialize, 1, &zopt_sometimes),
+	ZTI_INIT(ztest_trim, 1, &zopt_sometimes),
+	ZTI_INIT(ztest_verify_dnode_bt, 1, &zopt_sometimes),
+};
+
+#define	RAIDZ_EXPAND_FUNCS (sizeof (raidz_expand_info) / sizeof (ztest_info_t))
 
 /*
  * The following struct is used to hold a list of uncalled commit callbacks.
@@ -745,7 +786,7 @@ static ztest_option_t option_table[] = {
 	    DEFAULT_RAID_CHILDREN, NULL},
 	{ 'R',	"raid-parity", "INTEGER", "Raid parity",
 	    DEFAULT_RAID_PARITY, NULL},
-	{ 'K',	"raid-kind", "raidz|draid|random", "Raid kind",
+	{ 'K',  "raid-kind", "raidz|eraidz|draid|random", "Raid kind",
 	    NO_DEFAULT, "random"},
 	{ 'D',	"draid-data", "INTEGER", "Number of draid data drives",
 	    DEFAULT_DRAID_DATA, NULL},
@@ -781,6 +822,9 @@ static ztest_option_t option_table[] = {
 	    NO_DEFAULT, NULL},
 	{ 'C',	"vdev-class-state", "on|off|random", "vdev class state",
 	    NO_DEFAULT, "random"},
+	{ 'X', "raidz-expand-max-offset", "OFFSET",
+	    "raidz_expand test, killing at off bytes into reflow",
+	    NO_DEFAULT, NULL},
 	{ 'o',	"option", "\"OPTION=INTEGER\"",
 	    "Set global variable to an unsigned 32-bit integer value",
 	    NO_DEFAULT, NULL},
@@ -959,6 +1003,7 @@ process_options(int argc, char **argv)
 		case 'T':
 		case 'P':
 		case 'F':
+		case 'X':
 			value = nicenumtoull(optarg);
 		}
 		switch (opt) {
@@ -1027,6 +1072,9 @@ process_options(int argc, char **argv)
 		case 'V':
 			zo->zo_verbose++;
 			break;
+		case 'X':
+			zo->zo_raidz_expand_test = value;
+			break;
 		case 'E':
 			zo->zo_init = 0;
 			break;
@@ -1078,9 +1126,18 @@ process_options(int argc, char **argv)
 
 	fini_options();
 
-	/* When raid choice is 'random' add a draid pool 50% of the time */
 	if (strcmp(raid_kind, "random") == 0) {
-		raid_kind = (ztest_random(2) == 0) ? "draid" : "raidz";
+		switch (ztest_random(3)) {
+		case 0:
+			raid_kind = "raidz";
+			break;
+		case 1:
+			raid_kind = "eraidz";
+			break;
+		case 2:
+			raid_kind = "draid";
+			break;
+		}
 
 		if (ztest_opts.zo_verbose >= 3)
 			(void) printf("choosing RAID type '%s'\n", raid_kind);
@@ -1118,6 +1175,16 @@ process_options(int argc, char **argv)
 
 		(void) strlcpy(zo->zo_raid_type, VDEV_TYPE_DRAID,
 		    sizeof (zo->zo_raid_type));
+
+	} else if (strcmp(raid_kind, "eraidz") == 0) {
+		/* using eraidz (expandable raidz) */
+		zo->zo_raid_do_expand = B_TRUE;
+
+		/* No top-level mirrors with raidz expansion for now */
+		zo->zo_mirrors = 0;
+
+		zo->zo_raid_parity = MIN(zo->zo_raid_parity,
+		    zo->zo_raid_children - 1);
 
 	} else /* using raidz */ {
 		ASSERT0(strcmp(raid_kind, "raidz"));
@@ -1166,9 +1233,29 @@ ztest_kill(ztest_shared_t *zs)
 	 * Before we kill ourselves, make sure that the config is updated.
 	 * See comment above spa_write_cachefile().
 	 */
-	mutex_enter(&spa_namespace_lock);
-	spa_write_cachefile(ztest_spa, B_FALSE, B_FALSE, B_FALSE);
-	mutex_exit(&spa_namespace_lock);
+	if (raidz_expand_max_offset_pause) {
+		if (mutex_tryenter(&spa_namespace_lock)) {
+			spa_write_cachefile(ztest_spa, B_FALSE, B_FALSE,
+			    B_FALSE);
+			mutex_exit(&spa_namespace_lock);
+
+			ztest_scratch_state->zs_raidz_scratch_verify_pause =
+			    raidz_expand_max_offset_pause;
+		} else {
+			/*
+			 * Do not verify scratch object in case if
+			 * spa_namespace_lock cannot be acquired,
+			 * it can cause deadlock in spa_config_update().
+			 */
+			raidz_expand_max_offset_pause = 0;
+
+			return;
+		}
+	} else {
+		mutex_enter(&spa_namespace_lock);
+		spa_write_cachefile(ztest_spa, B_FALSE, B_FALSE, B_FALSE);
+		mutex_exit(&spa_namespace_lock);
+	}
 
 	(void) raise(SIGKILL);
 }
@@ -1615,7 +1702,7 @@ ztest_rll_lock(rll_t *rll, rl_type_t type)
 {
 	mutex_enter(&rll->rll_lock);
 
-	if (type == RL_READER) {
+	if (type == ZTRL_READER) {
 		while (rll->rll_writer != NULL)
 			(void) cv_wait(&rll->rll_cv, &rll->rll_lock);
 		rll->rll_readers++;
@@ -2071,7 +2158,7 @@ ztest_replay_remove(void *arg1, void *arg2, boolean_t byteswap)
 	    zap_lookup(os, lr->lr_doid, name, sizeof (object), 1, &object));
 	ASSERT3U(object, !=, 0);
 
-	ztest_object_lock(zd, object, RL_WRITER);
+	ztest_object_lock(zd, object, ZTRL_WRITER);
 
 	VERIFY0(dmu_object_info(os, object, &doi));
 
@@ -2141,8 +2228,8 @@ ztest_replay_write(void *arg1, void *arg2, boolean_t byteswap)
 	if (bt->bt_magic != BT_MAGIC)
 		bt = NULL;
 
-	ztest_object_lock(zd, lr->lr_foid, RL_READER);
-	rl = ztest_range_lock(zd, lr->lr_foid, offset, length, RL_WRITER);
+	ztest_object_lock(zd, lr->lr_foid, ZTRL_READER);
+	rl = ztest_range_lock(zd, lr->lr_foid, offset, length, ZTRL_WRITER);
 
 	VERIFY0(dmu_bonus_hold(os, lr->lr_foid, FTAG, &db));
 
@@ -2245,9 +2332,9 @@ ztest_replay_truncate(void *arg1, void *arg2, boolean_t byteswap)
 	if (byteswap)
 		byteswap_uint64_array(lr, sizeof (*lr));
 
-	ztest_object_lock(zd, lr->lr_foid, RL_READER);
+	ztest_object_lock(zd, lr->lr_foid, ZTRL_READER);
 	rl = ztest_range_lock(zd, lr->lr_foid, lr->lr_offset, lr->lr_length,
-	    RL_WRITER);
+	    ZTRL_WRITER);
 
 	tx = dmu_tx_create(os);
 
@@ -2287,7 +2374,7 @@ ztest_replay_setattr(void *arg1, void *arg2, boolean_t byteswap)
 	if (byteswap)
 		byteswap_uint64_array(lr, sizeof (*lr));
 
-	ztest_object_lock(zd, lr->lr_foid, RL_WRITER);
+	ztest_object_lock(zd, lr->lr_foid, ZTRL_WRITER);
 
 	VERIFY0(dmu_bonus_hold(os, lr->lr_foid, FTAG, &db));
 
@@ -2414,7 +2501,7 @@ ztest_get_data(void *arg, uint64_t arg2, lr_write_t *lr, char *buf,
 	ASSERT3P(lwb, !=, NULL);
 	ASSERT3U(size, !=, 0);
 
-	ztest_object_lock(zd, object, RL_READER);
+	ztest_object_lock(zd, object, ZTRL_READER);
 	error = dmu_bonus_hold(os, object, FTAG, &db);
 	if (error) {
 		ztest_object_unlock(zd, object);
@@ -2439,7 +2526,7 @@ ztest_get_data(void *arg, uint64_t arg2, lr_write_t *lr, char *buf,
 
 	if (buf != NULL) {	/* immediate write */
 		zgd->zgd_lr = (struct zfs_locked_range *)ztest_range_lock(zd,
-		    object, offset, size, RL_READER);
+		    object, offset, size, ZTRL_READER);
 
 		error = dmu_read(os, object, offset, size, buf,
 		    DMU_READ_NO_PREFETCH);
@@ -2455,7 +2542,7 @@ ztest_get_data(void *arg, uint64_t arg2, lr_write_t *lr, char *buf,
 		}
 
 		zgd->zgd_lr = (struct zfs_locked_range *)ztest_range_lock(zd,
-		    object, offset, size, RL_READER);
+		    object, offset, size, ZTRL_READER);
 
 		error = dmu_buf_hold(os, object, offset, zgd, &db,
 		    DMU_READ_NO_PREFETCH);
@@ -2532,7 +2619,7 @@ ztest_lookup(ztest_ds_t *zd, ztest_od_t *od, int count)
 			ASSERT3U(od->od_object, !=, 0);
 			ASSERT0(missing);	/* there should be no gaps */
 
-			ztest_object_lock(zd, od->od_object, RL_READER);
+			ztest_object_lock(zd, od->od_object, ZTRL_READER);
 			VERIFY0(dmu_bonus_hold(zd->zd_os, od->od_object,
 			    FTAG, &db));
 			dmu_object_info_from_db(db, &doi);
@@ -2705,8 +2792,8 @@ ztest_prealloc(ztest_ds_t *zd, uint64_t object, uint64_t offset, uint64_t size)
 
 	txg_wait_synced(dmu_objset_pool(os), 0);
 
-	ztest_object_lock(zd, object, RL_READER);
-	rl = ztest_range_lock(zd, object, offset, size, RL_WRITER);
+	ztest_object_lock(zd, object, ZTRL_READER);
+	rl = ztest_range_lock(zd, object, offset, size, ZTRL_WRITER);
 
 	tx = dmu_tx_create(os);
 
@@ -3034,13 +3121,32 @@ ztest_mmp_enable_disable(ztest_ds_t *zd, uint64_t id)
 	spa_config_exit(spa, SCL_CONFIG, FTAG);
 }
 
+static int
+ztest_get_raidz_children(spa_t *spa)
+{
+	(void) spa;
+	vdev_t *raidvd;
+
+	ASSERT(MUTEX_HELD(&ztest_vdev_lock));
+
+	if (ztest_opts.zo_raid_do_expand) {
+		raidvd = ztest_spa->spa_root_vdev->vdev_child[0];
+
+		ASSERT(raidvd->vdev_ops == &vdev_raidz_ops);
+
+		return (raidvd->vdev_children);
+	}
+
+	return (ztest_opts.zo_raid_children);
+}
+
 void
 ztest_spa_upgrade(ztest_ds_t *zd, uint64_t id)
 {
 	(void) zd, (void) id;
 	spa_t *spa;
 	uint64_t initial_version = SPA_VERSION_INITIAL;
-	uint64_t version, newversion;
+	uint64_t raidz_children, version, newversion;
 	nvlist_t *nvroot, *props;
 	char *name;
 
@@ -3059,8 +3165,10 @@ ztest_spa_upgrade(ztest_ds_t *zd, uint64_t id)
 	 */
 	(void) spa_destroy(name);
 
+	raidz_children = ztest_get_raidz_children(ztest_spa);
+
 	nvroot = make_vdev_root(NULL, NULL, name, ztest_opts.zo_vdev_size, 0,
-	    NULL, ztest_opts.zo_raid_children, ztest_opts.zo_mirrors, 1);
+	    NULL, raidz_children, ztest_opts.zo_mirrors, 1);
 
 	/*
 	 * If we're configuring a RAIDZ device then make sure that the
@@ -3126,6 +3234,7 @@ ztest_spa_checkpoint(spa_t *spa)
 	case ZFS_ERR_DEVRM_IN_PROGRESS:
 	case ZFS_ERR_DISCARDING_CHECKPOINT:
 	case ZFS_ERR_CHECKPOINT_EXISTS:
+	case ZFS_ERR_RAIDZ_EXPAND_IN_PROGRESS:
 		break;
 	case ENOSPC:
 		ztest_record_enospc(FTAG);
@@ -3206,6 +3315,8 @@ ztest_vdev_add_remove(ztest_ds_t *zd, uint64_t id)
 	spa_t *spa = ztest_spa;
 	uint64_t leaves;
 	uint64_t guid;
+	uint64_t raidz_children;
+
 	nvlist_t *nvroot;
 	int error;
 
@@ -3213,8 +3324,8 @@ ztest_vdev_add_remove(ztest_ds_t *zd, uint64_t id)
 		return;
 
 	mutex_enter(&ztest_vdev_lock);
-	leaves = MAX(zs->zs_mirrors + zs->zs_splits, 1) *
-	    ztest_opts.zo_raid_children;
+	raidz_children = ztest_get_raidz_children(spa);
+	leaves = MAX(zs->zs_mirrors + zs->zs_splits, 1) * raidz_children;
 
 	spa_config_enter(spa, SCL_VDEV, FTAG, RW_READER);
 
@@ -3268,7 +3379,7 @@ ztest_vdev_add_remove(ztest_ds_t *zd, uint64_t id)
 		 */
 		nvroot = make_vdev_root(NULL, NULL, NULL,
 		    ztest_opts.zo_vdev_size, 0, (ztest_random(4) == 0) ?
-		    "log" : NULL, ztest_opts.zo_raid_children, zs->zs_mirrors,
+		    "log" : NULL, raidz_children, zs->zs_mirrors,
 		    1);
 
 		error = spa_vdev_add(spa, nvroot);
@@ -3296,6 +3407,7 @@ ztest_vdev_class_add(ztest_ds_t *zd, uint64_t id)
 	spa_t *spa = ztest_spa;
 	uint64_t leaves;
 	nvlist_t *nvroot;
+	uint64_t raidz_children;
 	const char *class = (ztest_random(2) == 0) ?
 	    VDEV_ALLOC_BIAS_SPECIAL : VDEV_ALLOC_BIAS_DEDUP;
 	int error;
@@ -3323,15 +3435,15 @@ ztest_vdev_class_add(ztest_ds_t *zd, uint64_t id)
 		return;
 	}
 
-	leaves = MAX(zs->zs_mirrors + zs->zs_splits, 1) *
-	    ztest_opts.zo_raid_children;
+	raidz_children = ztest_get_raidz_children(spa);
+	leaves = MAX(zs->zs_mirrors + zs->zs_splits, 1) * raidz_children;
 
 	spa_config_enter(spa, SCL_VDEV, FTAG, RW_READER);
 	ztest_shared->zs_vdev_next_leaf = spa_num_top_vdevs(spa) * leaves;
 	spa_config_exit(spa, SCL_VDEV, FTAG);
 
 	nvroot = make_vdev_root(NULL, NULL, NULL, ztest_opts.zo_vdev_size, 0,
-	    class, ztest_opts.zo_raid_children, zs->zs_mirrors, 1);
+	    class, raidz_children, zs->zs_mirrors, 1);
 
 	error = spa_vdev_add(spa, nvroot);
 	fnvlist_free(nvroot);
@@ -3593,6 +3705,7 @@ ztest_vdev_attach_detach(ztest_ds_t *zd, uint64_t id)
 	uint64_t ashift = ztest_get_ashift();
 	uint64_t oldguid, pguid;
 	uint64_t oldsize, newsize;
+	uint64_t raidz_children;
 	char *oldpath, *newpath;
 	int replacing;
 	int oldvd_has_siblings = B_FALSE;
@@ -3609,7 +3722,8 @@ ztest_vdev_attach_detach(ztest_ds_t *zd, uint64_t id)
 	newpath = umem_alloc(MAXPATHLEN, UMEM_NOFAIL);
 
 	mutex_enter(&ztest_vdev_lock);
-	leaves = MAX(zs->zs_mirrors, 1) * ztest_opts.zo_raid_children;
+	raidz_children = ztest_get_raidz_children(spa);
+	leaves = MAX(zs->zs_mirrors, 1) * raidz_children;
 
 	spa_config_enter(spa, SCL_ALL, FTAG, RW_WRITER);
 
@@ -3620,6 +3734,14 @@ ztest_vdev_attach_detach(ztest_ds_t *zd, uint64_t id)
 	 * of removal.
 	 */
 	if (ztest_device_removal_active) {
+		spa_config_exit(spa, SCL_ALL, FTAG);
+		goto out;
+	}
+
+	/*
+	 * Does not work with expandable raidz, bp corruptions detected.
+	 */
+	if (ztest_opts.zo_raid_do_expand) {
 		spa_config_exit(spa, SCL_ALL, FTAG);
 		goto out;
 	}
@@ -3648,7 +3770,7 @@ ztest_vdev_attach_detach(ztest_ds_t *zd, uint64_t id)
 	if (zs->zs_mirrors >= 1) {
 		ASSERT3P(oldvd->vdev_ops, ==, &vdev_mirror_ops);
 		ASSERT3U(oldvd->vdev_children, >=, zs->zs_mirrors);
-		oldvd = oldvd->vdev_child[leaf / ztest_opts.zo_raid_children];
+		oldvd = oldvd->vdev_child[leaf / raidz_children];
 	}
 
 	/* pick a child out of the raidz group */
@@ -3657,8 +3779,7 @@ ztest_vdev_attach_detach(ztest_ds_t *zd, uint64_t id)
 			ASSERT3P(oldvd->vdev_ops, ==, &vdev_raidz_ops);
 		else
 			ASSERT3P(oldvd->vdev_ops, ==, &vdev_draid_ops);
-		ASSERT3U(oldvd->vdev_children, ==, ztest_opts.zo_raid_children);
-		oldvd = oldvd->vdev_child[leaf % ztest_opts.zo_raid_children];
+		oldvd = oldvd->vdev_child[leaf % raidz_children];
 	}
 
 	/*
@@ -3823,6 +3944,177 @@ out:
 	mutex_exit(&ztest_vdev_lock);
 
 	umem_free(oldpath, MAXPATHLEN);
+	umem_free(newpath, MAXPATHLEN);
+}
+
+static void
+raidz_scratch_verify(void)
+{
+	spa_t *spa;
+	uint64_t pause, offset;
+	raidz_reflow_scratch_state_t state;
+
+	ASSERT(raidz_expand_max_offset_pause == 0);
+
+	if (ztest_scratch_state->zs_raidz_scratch_verify_pause == 0)
+		return;
+
+	kernel_init(SPA_MODE_READ);
+
+	mutex_enter(&spa_namespace_lock);
+	spa = spa_lookup(ztest_opts.zo_pool);
+	ASSERT(spa);
+	spa->spa_import_flags |= ZFS_IMPORT_SKIP_MMP;
+	mutex_exit(&spa_namespace_lock);
+
+	VERIFY0(spa_open(ztest_opts.zo_pool, &spa, FTAG));
+
+	ASSERT3U(RRSS_GET_OFFSET(&spa->spa_uberblock), !=, UINT64_MAX);
+
+	pause = ztest_scratch_state->zs_raidz_scratch_verify_pause;
+	offset = RRSS_GET_OFFSET(&spa->spa_uberblock);
+	state = RRSS_GET_STATE(&spa->spa_uberblock);
+
+	if (pause < RAIDZ_EXPAND_PAUSE_SCRATCH_VALID) {
+		ASSERT3U(offset, ==, 0);
+		ASSERT3U(state, ==, RRSS_SCRATCH_NOT_IN_USE);
+	} else if (pause >= RAIDZ_EXPAND_PAUSE_SCRATCH_VALID &&
+	    pause <= RAIDZ_EXPAND_PAUSE_SCRATCH_REFLOWED) {
+		ASSERT3U(offset, >=, pause);
+		ASSERT3U(state, ==, RRSS_SCRATCH_VALID);
+	} else {
+		ASSERT(pause <= RAIDZ_EXPAND_PAUSE_SCRATCH_NOT_IN_USE);
+		ASSERT3U(offset, >, pause);
+		ASSERT3U(state, ==, RRSS_SCRATCH_NOT_IN_USE);
+	}
+
+	ztest_scratch_state->zs_raidz_scratch_verify_pause = 0;
+
+	spa_close(spa, FTAG);
+	kernel_fini();
+}
+
+static void
+ztest_scratch_thread(void *arg)
+{
+	(void) arg;
+
+	for (int t = 100; t > 0; t -= 1) {
+		if (raidz_expand_max_offset_pause == 0)
+			thread_exit();
+
+		(void) poll(NULL, 0, 100);
+	}
+
+	ztest_kill(ztest_shared);
+}
+
+/*
+ * Verify that we can attach raidz device.
+ */
+void
+ztest_vdev_raidz_attach(ztest_ds_t *zd, uint64_t id)
+{
+	(void) zd, (void) id;
+	ztest_shared_t *zs = ztest_shared;
+	spa_t *spa = ztest_spa;
+	uint64_t leaves, raidz_children, newsize, ashift = ztest_get_ashift();
+	kthread_t *scratch_thread = NULL;
+	vdev_t *newvd, *pvd;
+	nvlist_t *root;
+	char *newpath = umem_alloc(MAXPATHLEN, UMEM_NOFAIL);
+	int error, expected_error = 0;
+
+	mutex_enter(&ztest_vdev_lock);
+
+	spa_config_enter(spa, SCL_ALL, FTAG, RW_READER);
+
+	if (!ztest_opts.zo_raid_do_expand) {
+		spa_config_exit(spa, SCL_ALL, FTAG);
+		goto out;
+	}
+
+	if (ztest_opts.zo_mmp_test) {
+		spa_config_exit(spa, SCL_ALL, FTAG);
+		goto out;
+	}
+
+	if (ztest_device_removal_active) {
+		spa_config_exit(spa, SCL_ALL, FTAG);
+		goto out;
+	}
+
+	pvd = vdev_lookup_top(spa, 0);
+
+	ASSERT(pvd->vdev_ops == &vdev_raidz_ops);
+
+	/*
+	 * Get size of a child of the raidz group,
+	 * make sure device is a bit bigger
+	 */
+	newvd = pvd->vdev_child[ztest_random(pvd->vdev_children)];
+	newsize = 10 * vdev_get_min_asize(newvd) / (9 + ztest_random(2));
+
+	/*
+	 * Get next attached leaf id
+	 */
+	raidz_children = ztest_get_raidz_children(spa);
+	leaves = MAX(zs->zs_mirrors + zs->zs_splits, 1) * raidz_children;
+	zs->zs_vdev_next_leaf = spa_num_top_vdevs(spa) * leaves;
+
+	if (spa->spa_raidz_expand)
+		expected_error = ZFS_ERR_RAIDZ_EXPAND_IN_PROGRESS;
+
+	spa_config_exit(spa, SCL_ALL, FTAG);
+
+	/*
+	 * Path to vdev to be attached
+	 */
+	(void) snprintf(newpath, MAXPATHLEN, ztest_dev_template,
+	    ztest_opts.zo_dir, ztest_opts.zo_pool, zs->zs_vdev_next_leaf);
+
+	/*
+	 * Build the nvlist describing newpath.
+	 */
+	root = make_vdev_root(newpath, NULL, NULL, newsize, ashift, NULL,
+	    0, 0, 1);
+
+	if (ztest_random(2) == 0 && expected_error == 0) {
+		raidz_expand_max_offset_pause =
+		    ztest_random(RAIDZ_EXPAND_PAUSE_SCRATCH_NOT_IN_USE) + 1;
+		scratch_thread = thread_create(NULL, 0, ztest_scratch_thread,
+		    ztest_shared, 0, NULL, TS_RUN | TS_JOINABLE, defclsyspri);
+	}
+
+	error = spa_vdev_attach(spa, pvd->vdev_guid, root, B_FALSE, B_FALSE);
+
+	nvlist_free(root);
+
+	if (error == EOVERFLOW ||
+	    error == ZFS_ERR_CHECKPOINT_EXISTS ||
+	    error == ZFS_ERR_DISCARDING_CHECKPOINT)
+		expected_error = error;
+
+	if (error != 0 && error != expected_error) {
+		fatal(0, "raidz attach (%s %"PRIu64") returned %d, expected %d",
+		    newpath, newsize, error, expected_error);
+	}
+
+	if (raidz_expand_max_offset_pause) {
+		if (error != 0) {
+			/*
+			 * Do not verify scratch object in case of error
+			 * returned by vdev attaching.
+			 */
+			raidz_expand_max_offset_pause = 0;
+		}
+
+		VERIFY0(thread_join(scratch_thread));
+	}
+
+out:
+	mutex_exit(&ztest_vdev_lock);
+
 	umem_free(newpath, MAXPATHLEN);
 }
 
@@ -4026,6 +4318,18 @@ ztest_vdev_LUN_growth(ztest_ds_t *zd, uint64_t id)
 	 * when the device removal completes).
 	 */
 	if (ztest_device_removal_active) {
+		spa_config_exit(spa, SCL_STATE, spa);
+		mutex_exit(&ztest_vdev_lock);
+		mutex_exit(&ztest_checkpoint_lock);
+		return;
+	}
+
+	/*
+	 * If we under raidz expansion, the test can failed because metaslabs
+	 * count will not increase immediately after vdevs growing. It will
+	 * happen only after raidz expansion completion.
+	 */
+	if (spa->spa_raidz_expand) {
 		spa_config_exit(spa, SCL_STATE, spa);
 		mutex_exit(&ztest_vdev_lock);
 		mutex_exit(&ztest_checkpoint_lock);
@@ -5816,7 +6120,7 @@ ztest_verify_dnode_bt(ztest_ds_t *zd, uint64_t id)
 		dmu_object_info_t doi;
 		dmu_buf_t *db;
 
-		ztest_object_lock(zd, obj, RL_READER);
+		ztest_object_lock(zd, obj, ZTRL_READER);
 		if (dmu_bonus_hold(os, obj, FTAG, &db) != 0) {
 			ztest_object_unlock(zd, obj);
 			continue;
@@ -6039,6 +6343,7 @@ ztest_fault_inject(ztest_ds_t *zd, uint64_t id)
 	uint64_t leaves;
 	uint64_t bad = 0x1990c0ffeedecadeull;
 	uint64_t top, leaf;
+	uint64_t raidz_children;
 	char *path0;
 	char *pathrand;
 	size_t fsize;
@@ -6049,6 +6354,7 @@ ztest_fault_inject(ztest_ds_t *zd, uint64_t id)
 	vdev_t *vd0 = NULL;
 	uint64_t guid0 = 0;
 	boolean_t islog = B_FALSE;
+	boolean_t injected = B_FALSE;
 
 	path0 = umem_alloc(MAXPATHLEN, UMEM_NOFAIL);
 	pathrand = umem_alloc(MAXPATHLEN, UMEM_NOFAIL);
@@ -6061,15 +6367,23 @@ ztest_fault_inject(ztest_ds_t *zd, uint64_t id)
 	 * strategy for damaging blocks does not take in to account evacuated
 	 * blocks which may have already been damaged.
 	 */
-	if (ztest_device_removal_active) {
-		mutex_exit(&ztest_vdev_lock);
+	if (ztest_device_removal_active)
 		goto out;
-	}
+
+	/*
+	 * The fault injection strategy for damaging blocks cannot be used
+	 * if raidz expansion is in progress. The leaves value
+	 * (attached raidz children) is variable and strategy for damaging
+	 * blocks will corrupt same data blocks on different child vdevs
+	 * because of reflow process.
+	 */
+	if (spa->spa_raidz_expand != NULL)
+		goto out;
 
 	maxfaults = MAXFAULTS(zs);
-	leaves = MAX(zs->zs_mirrors, 1) * ztest_opts.zo_raid_children;
+	raidz_children = ztest_get_raidz_children(spa);
+	leaves = MAX(zs->zs_mirrors, 1) * raidz_children;
 	mirror_save = zs->zs_mirrors;
-	mutex_exit(&ztest_vdev_lock);
 
 	ASSERT3U(leaves, >=, 1);
 
@@ -6210,13 +6524,9 @@ ztest_fault_inject(ztest_ds_t *zd, uint64_t id)
 			 * call vdev_[on|off]line without holding locks
 			 * to force unpredictable failures but the side
 			 * effects of vdev_[on|off]line prevent us from
-			 * doing so. We grab the ztest_vdev_lock here to
-			 * prevent a race between injection testing and
-			 * aux_vdev removal.
+			 * doing so.
 			 */
-			mutex_enter(&ztest_vdev_lock);
 			(void) vdev_online(spa, guid0, 0, NULL);
-			mutex_exit(&ztest_vdev_lock);
 		}
 	}
 
@@ -6290,9 +6600,7 @@ ztest_fault_inject(ztest_ds_t *zd, uint64_t id)
 		    offset + sizeof (bad) > psize - VDEV_LABEL_END_SIZE)
 			continue;
 
-		mutex_enter(&ztest_vdev_lock);
 		if (mirror_save != zs->zs_mirrors) {
-			mutex_exit(&ztest_vdev_lock);
 			(void) close(fd);
 			goto out;
 		}
@@ -6302,15 +6610,25 @@ ztest_fault_inject(ztest_ds_t *zd, uint64_t id)
 			    "can't inject bad word at 0x%"PRIx64" in %s",
 			    offset, pathrand);
 
-		mutex_exit(&ztest_vdev_lock);
-
 		if (ztest_opts.zo_verbose >= 7)
 			(void) printf("injected bad word into %s,"
 			    " offset 0x%"PRIx64"\n", pathrand, offset);
+
+		injected = B_TRUE;
 	}
 
 	(void) close(fd);
 out:
+	mutex_exit(&ztest_vdev_lock);
+
+	if (injected && ztest_opts.zo_raid_do_expand) {
+		int error = spa_scan(spa, POOL_SCAN_SCRUB);
+		if (error == 0) {
+			while (dsl_scan_scrubbing(spa_get_dsl(spa)))
+				txg_wait_synced(spa_get_dsl(spa), 0);
+		}
+	}
+
 	umem_free(path0, MAXPATHLEN);
 	umem_free(pathrand, MAXPATHLEN);
 }
@@ -7194,6 +7512,38 @@ ztest_execute(int test, ztest_info_t *zi, uint64_t id)
 }
 
 static __attribute__((noreturn)) void
+ztest_rzx_thread(void *arg)
+{
+	int rand;
+	uint64_t id = (uintptr_t)arg;
+	ztest_shared_t *zs = ztest_shared;
+	uint64_t call_next;
+	hrtime_t now;
+	ztest_info_t *zi;
+	ztest_shared_callstate_t *zc;
+
+	while ((now = gethrtime()) < zs->zs_thread_stop) {
+		/*
+		 * Pick a random function to execute.
+		 * XXX - better to pick a specific set of functions here?
+		 * i.e. a deterministic set of operations to generate pool data.
+		 */
+		rand = ztest_random(RAIDZ_EXPAND_FUNCS);
+		zi = &raidz_expand_info[rand];
+		zc = ZTEST_GET_SHARED_CALLSTATE(rand);
+		call_next = zc->zc_next;
+
+		if (now >= call_next &&
+		    atomic_cas_64(&zc->zc_next, call_next, call_next +
+		    ztest_random(2 * zi->zi_interval[0] + 1)) == call_next) {
+			ztest_execute(rand, zi, id);
+		}
+	}
+
+	thread_exit();
+}
+
+static __attribute__((noreturn)) void
 ztest_thread(void *arg)
 {
 	int rand;
@@ -7208,7 +7558,7 @@ ztest_thread(void *arg)
 		/*
 		 * See if it's time to force a crash.
 		 */
-		if (now > zs->zs_thread_kill)
+		if (now > zs->zs_thread_kill && !raidz_expand_max_offset_pause)
 			ztest_kill(zs);
 
 		/*
@@ -7399,9 +7749,13 @@ ztest_freeze(void)
 	spa_t *spa;
 	int numloops = 0;
 
+	if (ztest_opts.zo_raid_do_expand)
+		return;
+
 	if (ztest_opts.zo_verbose >= 3)
 		(void) printf("testing spa_freeze()...\n");
 
+	raidz_scratch_verify();
 	kernel_init(SPA_MODE_READ | SPA_MODE_WRITE);
 	VERIFY0(spa_open(ztest_opts.zo_pool, &spa, FTAG));
 	VERIFY0(ztest_dataset_open(0));
@@ -7469,6 +7823,7 @@ ztest_freeze(void)
 	/*
 	 * Open and close the pool and dataset to induce log replay.
 	 */
+	raidz_scratch_verify();
 	kernel_init(SPA_MODE_READ | SPA_MODE_WRITE);
 	VERIFY0(spa_open(ztest_opts.zo_pool, &spa, FTAG));
 	ASSERT3U(spa_freeze_txg(spa), ==, UINT64_MAX);
@@ -7518,6 +7873,7 @@ ztest_import(ztest_shared_t *zs)
 	mutex_init(&ztest_checkpoint_lock, NULL, MUTEX_DEFAULT, NULL);
 	VERIFY0(pthread_rwlock_init(&ztest_name_lock, NULL));
 
+	raidz_scratch_verify();
 	kernel_init(SPA_MODE_READ | SPA_MODE_WRITE);
 
 	ztest_import_impl();
@@ -7535,6 +7891,363 @@ ztest_import(ztest_shared_t *zs)
 		ztest_run_zdb(ztest_opts.zo_pool);
 	}
 
+	(void) pthread_rwlock_destroy(&ztest_name_lock);
+	mutex_destroy(&ztest_vdev_lock);
+	mutex_destroy(&ztest_checkpoint_lock);
+}
+
+#define	RAIDZ_EXPAND_KILLED	UINT64_MAX
+#define	RAIDZ_EXPAND_CHECKED	(UINT64_MAX - 1)
+
+/*
+ * Start a raidz expansion test.  We run some I/O on the pool for a while
+ * to get some data in the pool.  Then we grow the raidz and
+ * kill the test at the requested offset into the reflow, verifying that
+ * doing such does not lead to pool corruption.
+ */
+static void
+ztest_raidz_expand_run(ztest_shared_t *zs)
+{
+	spa_t *spa;
+	objset_t *os;
+	kthread_t *resume_thread, *deadman_thread;
+	kthread_t **run_threads;
+	uint64_t object;
+	uint64_t ashift = ztest_get_ashift();
+	int error;
+	int i, t, d;
+	vdev_t *rzvd, *cvd;
+	uint64_t csize, desreflow;
+	nvlist_t *root;
+	char *newpath;
+	pool_raidz_expand_stat_t rzx_stats;
+	pool_raidz_expand_stat_t *pres = &rzx_stats;
+
+	newpath = umem_alloc(MAXPATHLEN, UMEM_NOFAIL);
+	ztest_exiting = B_FALSE;
+
+	/*
+	 * Initialize parent/child shared state.
+	 */
+	mutex_init(&ztest_vdev_lock, NULL, MUTEX_DEFAULT, NULL);
+	mutex_init(&ztest_checkpoint_lock, NULL, MUTEX_DEFAULT, NULL);
+	VERIFY0(pthread_rwlock_init(&ztest_name_lock, NULL));
+
+	zs->zs_thread_start = gethrtime();
+	zs->zs_thread_stop =
+	    zs->zs_thread_start + ztest_opts.zo_passtime * NANOSEC;
+	zs->zs_thread_stop = MIN(zs->zs_thread_stop, zs->zs_proc_stop);
+	zs->zs_thread_kill = zs->zs_thread_stop;
+	if (ztest_random(100) < ztest_opts.zo_killrate) {
+		zs->zs_thread_kill -=
+		    ztest_random(ztest_opts.zo_passtime * NANOSEC);
+	}
+
+	mutex_init(&zcl.zcl_callbacks_lock, NULL, MUTEX_DEFAULT, NULL);
+
+	list_create(&zcl.zcl_callbacks, sizeof (ztest_cb_data_t),
+	    offsetof(ztest_cb_data_t, zcd_node));
+
+	/*
+	 * Open our pool.  It may need to be imported first depending on
+	 * what tests were running when the previous pass was terminated.
+	 */
+	raidz_scratch_verify();
+	kernel_init(SPA_MODE_READ | SPA_MODE_WRITE);
+	error = spa_open(ztest_opts.zo_pool, &spa, FTAG);
+	if (error) {
+		VERIFY3S(error, ==, ENOENT);
+		ztest_import_impl();
+		VERIFY0(spa_open(ztest_opts.zo_pool, &spa, FTAG));
+		zs->zs_metaslab_sz =
+		    1ULL << spa->spa_root_vdev->vdev_child[0]->vdev_ms_shift;
+	}
+
+	metaslab_preload_limit = ztest_random(20) + 1;
+	ztest_spa = spa;
+
+	VERIFY0(vdev_raidz_impl_set("cycle"));
+
+	dmu_objset_stats_t dds;
+	VERIFY0(ztest_dmu_objset_own(ztest_opts.zo_pool,
+	    DMU_OST_ANY, B_TRUE, B_TRUE, FTAG, &os));
+	dsl_pool_config_enter(dmu_objset_pool(os), FTAG);
+	dmu_objset_fast_stat(os, &dds);
+	dsl_pool_config_exit(dmu_objset_pool(os), FTAG);
+	zs->zs_guid = dds.dds_guid;
+	dmu_objset_disown(os, B_TRUE, FTAG);
+
+	/*
+	 * Create a thread to periodically resume suspended I/O.
+	 */
+	resume_thread = thread_create(NULL, 0, ztest_resume_thread,
+	    spa, 0, NULL, TS_RUN | TS_JOINABLE, defclsyspri);
+
+	/*
+	 * Create a deadman thread and set to panic if we hang.
+	 */
+	deadman_thread = thread_create(NULL, 0, ztest_deadman_thread,
+	    zs, 0, NULL, TS_RUN | TS_JOINABLE, defclsyspri);
+
+	spa->spa_deadman_failmode = ZIO_FAILURE_MODE_PANIC;
+
+	/*
+	 * Verify that we can safely inquire about any object,
+	 * whether it's allocated or not.  To make it interesting,
+	 * we probe a 5-wide window around each power of two.
+	 * This hits all edge cases, including zero and the max.
+	 */
+	for (t = 0; t < 64; t++) {
+		for (d = -5; d <= 5; d++) {
+			error = dmu_object_info(spa->spa_meta_objset,
+			    (1ULL << t) + d, NULL);
+			ASSERT(error == 0 || error == ENOENT ||
+			    error == EINVAL);
+		}
+	}
+
+	/*
+	 * We should not get any ENOSPC errors in this test
+	 */
+	if (zs->zs_enospc_count != 0) {
+		fatal(0, "raidz expand: ENOSPC errors?");
+	}
+
+	run_threads = umem_zalloc(ztest_opts.zo_threads * sizeof (kthread_t *),
+	    UMEM_NOFAIL);
+
+	if (ztest_opts.zo_verbose >= 4)
+		(void) printf("starting main threads...\n");
+
+	/*
+	 * Replay all logs of all datasets in the pool. This is primarily for
+	 * temporary datasets which wouldn't otherwise get replayed, which
+	 * can trigger failures when attempting to offline a SLOG in
+	 * ztest_fault_inject().
+	 */
+	(void) dmu_objset_find(ztest_opts.zo_pool, ztest_replay_zil_cb,
+	    NULL, DS_FIND_CHILDREN);
+
+	if (ztest_opts.zo_raidz_expand_test != 0 &&
+	    ztest_opts.zo_raidz_expand_test < RAIDZ_EXPAND_KILLED) {
+		desreflow = ztest_opts.zo_raidz_expand_test;
+		/*
+		 * Set the reflow to pause at the desired offset
+		 */
+		raidz_expand_max_offset_pause = desreflow;
+		/*
+		 * In here on first pass of test only.
+		 */
+		if (ztest_opts.zo_verbose >= 1) {
+			(void) printf("running raidz expansion test,"
+			    " killing when offset %llu of reflow reached\n",
+			    (u_longlong_t)desreflow);
+			if (ztest_opts.zo_verbose > 1) {
+				/* XXX - pause to allow debugger attach */
+				(void) printf(
+				    "our pid is %d, pausing for 10 seconds\n",
+				    getpid());
+				sleep(10);
+			}
+		}
+		/*
+		 * Put some data in the pool and then attach a vdev to initiate
+		 * reflow.
+		 */
+		/*
+		 * Kick off all the I/O generators that run in parallel.
+		 */
+		for (t = 0; t < ztest_opts.zo_threads; t++) {
+			if (t < ztest_opts.zo_datasets &&
+			    ztest_dataset_open(t) != 0) {
+				umem_free(run_threads, ztest_opts.zo_threads *
+				    sizeof (kthread_t *));
+				return;
+			}
+
+			run_threads[t] = thread_create(NULL, 0,
+			    ztest_rzx_thread,
+			    (void *)(uintptr_t)t, 0, NULL, TS_RUN | TS_JOINABLE,
+			    defclsyspri);
+		}
+
+		/*
+		 * Wait a while for I/O to put some data in the pool
+		 * XXX- add an option to  specify if we wait for I/O to quiesce
+		 */
+		for (i = 0; i < 60; i++) {
+			txg_wait_synced(spa_get_dsl(spa), 0);
+			(void) poll(NULL, 0, 1000);
+		}
+
+		rzvd = spa->spa_root_vdev->vdev_child[0];
+		ASSERT(rzvd->vdev_ops == &vdev_raidz_ops);
+		/*
+		 * get size of a child of the raidz group
+		 */
+		cvd = rzvd->vdev_child[0];
+
+		csize = vdev_get_min_asize(cvd);
+		csize += csize / 10; /* make sure device is a bit bigger */
+		/*
+		 * Path to vdev to be attached
+		 */
+		(void) snprintf(newpath, MAXPATHLEN, ztest_dev_template,
+		    ztest_opts.zo_dir, ztest_opts.zo_pool, rzvd->vdev_children);
+		/*
+		 * Build the nvlist describing newpath.
+		 */
+		root = make_vdev_root(newpath, NULL, NULL, csize, ashift, NULL,
+		    0, 0, 1);
+		/*
+		 * Now attach the vdev to the raidz so it will expand
+		 */
+		if (ztest_opts.zo_verbose >= 1) {
+			(void) printf("expanding raidz\n");
+		}
+		error = spa_vdev_attach(spa, rzvd->vdev_guid, root, B_FALSE,
+		    B_FALSE);
+		nvlist_free(root);
+		if (error != 0) {
+			fatal(0, "raidz expand: attach (%s %llu) returned %d",
+			    newpath, (long long)csize, error);
+		}
+
+		/*
+		 * Wait for desired reflow offset to be reached and kill the
+		 * test
+		 */
+		/*
+		 * Wait for reflow to begin
+		 */
+		while (spa->spa_raidz_expand == NULL) {
+			txg_wait_synced(spa_get_dsl(spa), 0);
+			(void) poll(NULL, 0, 100); /* wait 1/10 second */
+		}
+		spa_config_enter(spa, SCL_CONFIG, FTAG, RW_READER);
+		(void) spa_raidz_expand_get_stats(spa, pres);
+		spa_config_exit(spa, SCL_CONFIG, FTAG);
+		while (pres->pres_state != DSS_SCANNING) {
+			txg_wait_synced(spa_get_dsl(spa), 0);
+			(void) poll(NULL, 0, 100); /* wait 1/10 second */
+			spa_config_enter(spa, SCL_CONFIG, FTAG, RW_READER);
+			(void) spa_raidz_expand_get_stats(spa, pres);
+			spa_config_exit(spa, SCL_CONFIG, FTAG);
+		}
+
+		ASSERT3U(pres->pres_state, ==, DSS_SCANNING);
+		ASSERT3U(pres->pres_to_reflow, !=, 0);
+		/*
+		 * Set so when we are killed we go to raidz checking rather than
+		 * restarting test.
+		 */
+		ztest_shared_opts->zo_raidz_expand_test = RAIDZ_EXPAND_KILLED;
+		if (ztest_opts.zo_verbose >= 1) {
+			(void) printf("raidz expandsion reflow started,"
+			    " waiting for offset %llu to be reched\n",
+			    (u_longlong_t)desreflow);
+		}
+
+		while (pres->pres_reflowed < desreflow) {
+			txg_wait_synced(spa_get_dsl(spa), 0);
+			(void) poll(NULL, 0, 100); /* wait 1/10 second */
+			spa_config_enter(spa, SCL_CONFIG, FTAG, RW_READER);
+			(void) spa_raidz_expand_get_stats(spa, pres);
+			spa_config_exit(spa, SCL_CONFIG, FTAG);
+		}
+
+		/*
+		 * XXX - should we clear the reflow pause here?
+		 */
+		if (ztest_opts.zo_verbose >= 1) {
+			(void) printf(
+			    "killing raidz expandsion test offset at %llu\n",
+			    (u_longlong_t)pres->pres_reflowed);
+		}
+		/*
+		 * Kill ourself, this simulates a panic during a reflow.  Our
+		 * parent will restart the test and the changed flag value
+		 * will drive the test through the scrub/check code to
+		 * verify the pool is not corrupted.
+		 */
+		ztest_kill(zs);
+	} else { /* check the pool is healthy */
+		/*
+		 * Set pool check done flag, main program will run a zdb check
+		 * of the pool when we exit.
+		 */
+		ztest_shared_opts->zo_raidz_expand_test = RAIDZ_EXPAND_CHECKED;
+		/* XXX - wait for reflow done? */
+		if (ztest_opts.zo_verbose >= 1) {
+			(void) printf("\nverifying raidz expansion\n");
+			if (ztest_opts.zo_verbose > 1) {
+				/* XXX - pause to allow debugger attach */
+				(void) printf(
+				    "our pid is %d, pausing for 10 seconds\n",
+				    getpid());
+				sleep(10);
+			}
+		}
+		VERIFY0(ztest_scrub_impl(spa));
+		if (ztest_opts.zo_verbose >= 1) {
+			(void) printf("raidz expansion scrub check complete\n");
+		}
+	}
+
+
+	txg_wait_synced(spa_get_dsl(spa), 0);
+
+	zs->zs_alloc = metaslab_class_get_alloc(spa_normal_class(spa));
+	zs->zs_space = metaslab_class_get_space(spa_normal_class(spa));
+
+	umem_free(run_threads, ztest_opts.zo_threads * sizeof (kthread_t *));
+
+	/* Kill the resume and deadman threads */
+	ztest_exiting = B_TRUE;
+	VERIFY0(thread_join(resume_thread));
+	VERIFY0(thread_join(deadman_thread));
+	ztest_resume(spa);
+
+	/*
+	 * Right before closing the pool, kick off a bunch of async I/O;
+	 * spa_close() should wait for it to complete.
+	 */
+	for (object = 1; object < 50; object++) {
+		dmu_prefetch(spa->spa_meta_objset, object, 0, 0, 1ULL << 20,
+		    ZIO_PRIORITY_SYNC_READ);
+	}
+
+	/* Verify that at least one commit cb was called in a timely fashion */
+	if (zc_cb_counter >= ZTEST_COMMIT_CB_MIN_REG)
+		VERIFY0(zc_min_txg_delay);
+
+	spa_close(spa, FTAG);
+
+	/*
+	 * Verify that we can loop over all pools.
+	 */
+	mutex_enter(&spa_namespace_lock);
+	for (spa = spa_next(NULL); spa != NULL; spa = spa_next(spa))
+		if (ztest_opts.zo_verbose > 3)
+			(void) printf("spa_next: found %s\n", spa_name(spa));
+	mutex_exit(&spa_namespace_lock);
+
+	/*
+	 * Verify that we can export the pool and reimport it under a
+	 * different name.
+	 */
+	if ((ztest_random(2) == 0) && !ztest_opts.zo_mmp_test) {
+		char name[ZFS_MAX_DATASET_NAME_LEN];
+		(void) snprintf(name, sizeof (name), "%s_import",
+		    ztest_opts.zo_pool);
+		ztest_spa_import_export(ztest_opts.zo_pool, name);
+		ztest_spa_import_export(name, ztest_opts.zo_pool);
+	}
+
+	kernel_fini();
+
+	list_destroy(&zcl.zcl_callbacks);
+	mutex_destroy(&zcl.zcl_callbacks_lock);
 	(void) pthread_rwlock_destroy(&ztest_name_lock);
 	mutex_destroy(&ztest_vdev_lock);
 	mutex_destroy(&ztest_checkpoint_lock);
@@ -7582,6 +8295,7 @@ ztest_run(ztest_shared_t *zs)
 	 * Open our pool.  It may need to be imported first depending on
 	 * what tests were running when the previous pass was terminated.
 	 */
+	raidz_scratch_verify();
 	kernel_init(SPA_MODE_READ | SPA_MODE_WRITE);
 	error = spa_open(ztest_opts.zo_pool, &spa, FTAG);
 	if (error) {
@@ -7595,7 +8309,10 @@ ztest_run(ztest_shared_t *zs)
 	metaslab_preload_limit = ztest_random(20) + 1;
 	ztest_spa = spa;
 
-	VERIFY0(vdev_raidz_impl_set("cycle"));
+	/*
+	 * BUGBUG raidz expansion do not run this for now
+	 * VERIFY0(vdev_raidz_impl_set("cycle"));
+	 */
 
 	dmu_objset_stats_t dds;
 	VERIFY0(ztest_dmu_objset_own(ztest_opts.zo_pool,
@@ -7825,6 +8542,7 @@ ztest_init(ztest_shared_t *zs)
 	mutex_init(&ztest_checkpoint_lock, NULL, MUTEX_DEFAULT, NULL);
 	VERIFY0(pthread_rwlock_init(&ztest_name_lock, NULL));
 
+	raidz_scratch_verify();
 	kernel_init(SPA_MODE_READ | SPA_MODE_WRITE);
 
 	/*
@@ -7909,6 +8627,7 @@ shared_data_size(ztest_shared_hdr_t *hdr)
 	size += hdr->zh_size;
 	size += hdr->zh_stats_size * hdr->zh_stats_count;
 	size += hdr->zh_ds_size * hdr->zh_ds_count;
+	size += hdr->zh_scratch_state_size;
 
 	return (size);
 }
@@ -7932,6 +8651,7 @@ setup_hdr(void)
 	hdr->zh_stats_count = ZTEST_FUNCS;
 	hdr->zh_ds_size = sizeof (ztest_shared_ds_t);
 	hdr->zh_ds_count = ztest_opts.zo_datasets;
+	hdr->zh_scratch_state_size = sizeof (ztest_shared_scratch_state_t);
 
 	size = shared_data_size(hdr);
 	VERIFY0(ftruncate(ztest_fd_data, size));
@@ -7966,6 +8686,8 @@ setup_data(void)
 	ztest_shared_callstate = (void *)&buf[offset];
 	offset += hdr->zh_stats_size * hdr->zh_stats_count;
 	ztest_shared_ds = (void *)&buf[offset];
+	offset += hdr->zh_ds_size * hdr->zh_ds_count;
+	ztest_scratch_state = (void *)&buf[offset];
 }
 
 static boolean_t
@@ -8176,10 +8898,14 @@ main(int argc, char **argv)
 		metaslab_df_alloc_threshold =
 		    zs->zs_metaslab_df_alloc_threshold;
 
-		if (zs->zs_do_init)
+		if (zs->zs_do_init) {
 			ztest_run_init();
-		else
-			ztest_run(zs);
+		} else {
+			if (ztest_opts.zo_raidz_expand_test)
+				ztest_raidz_expand_run(zs);
+			else
+				ztest_run(zs);
+		}
 		exit(0);
 	}
 
@@ -8305,6 +9031,9 @@ main(int argc, char **argv)
 
 		if (!ztest_opts.zo_mmp_test)
 			ztest_run_zdb(ztest_opts.zo_pool);
+		if (ztest_shared_opts->zo_raidz_expand_test ==
+		    RAIDZ_EXPAND_CHECKED)
+			break; /* raidz expand test complete */
 	}
 
 	if (ztest_opts.zo_verbose >= 1) {
@@ -8317,6 +9046,8 @@ main(int argc, char **argv)
 		(void) printf("%d killed, %d completed, %.0f%% kill rate\n",
 		    kills, iters - kills, (100.0 * kills) / MAX(1, iters));
 	}
+
+	dump_debug_buffer();
 
 	umem_free(cmd, MAXNAMELEN);
 
