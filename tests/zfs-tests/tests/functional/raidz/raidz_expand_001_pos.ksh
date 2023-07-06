@@ -50,7 +50,6 @@ typeset -r dev_size_mb=128
 typeset -a disks
 
 prefetch_disable=$(get_tunable PREFETCH_DISABLE)
-max_offset=$(get_tunable RAIDZ_EXPAND_MAX_OFFSET_PAUSE)
 
 function cleanup
 {
@@ -63,7 +62,7 @@ function cleanup
 	done
 
 	log_must set_tunable32 PREFETCH_DISABLE $prefetch_disable
-	log_must set_tunable64 RAIDZ_EXPAND_MAX_OFFSET_PAUSE $max_offset
+	log_must set_tunable64 RAIDZ_EXPAND_MAX_OFFSET_PAUSE 0
 }
 
 function wait_expand_paused
@@ -151,6 +150,7 @@ function test_scrub # <pool> <parity> <dir>
 
 	log_must zpool export $pool
 
+	# zero out parity disks
 	for (( i=0; i<$nparity; i=i+1 )); do
 		dd conv=notrunc if=/dev/zero of=$dir/dev-$i \
 		    bs=1M seek=4 count=$(($dev_size_mb-4))
@@ -162,6 +162,7 @@ function test_scrub # <pool> <parity> <dir>
 	log_must zpool clear $pool
 	log_must zpool export $pool
 
+	# zero out parity count worth of data disks
 	for (( i=$nparity; i<$nparity*2; i=i+1 )); do
 		dd conv=notrunc if=/dev/zero of=$dir/dev-$i \
 		    bs=1M seek=4 count=$(($dev_size_mb-4))
@@ -174,7 +175,7 @@ function test_scrub # <pool> <parity> <dir>
 	log_must check_pool_status $pool "errors" "No known data errors"
 
 	log_must zpool clear $pool
-	log_must set_tunable64 RAIDZ_EXPAND_MAX_OFFSET_PAUSE $max_offset
+	log_must set_tunable64 RAIDZ_EXPAND_MAX_OFFSET_PAUSE 0
 	log_must zpool wait -t raidz_expand $TESTPOOL
 }
 
