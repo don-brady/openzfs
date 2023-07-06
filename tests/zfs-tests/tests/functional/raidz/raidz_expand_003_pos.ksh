@@ -39,7 +39,7 @@
 #	    - set raidz expand offset pause
 #	    - start randwritecomp on one of the datasets files
 #	    - attach new device to the pool
-#	    - wait reflow offset become equal to raidz expand pause offset
+#	    - wait until reflow offset is equal to raidz expand pause offset
 #	    - kill randwritecomp
 #	    - verify pool
 #	    - set raidz expand offset to max value to complete raidz expansion
@@ -60,12 +60,14 @@ function cleanup
 	done
 
 	log_must set_tunable32 EMBEDDED_SLOG_MIN_MS $embedded_slog_min_ms
+	log_must set_tunable64 RAIDZ_EXPAND_MAX_OFFSET_PAUSE 0
 }
 
 function wait_expand_paused
 {
 	oldcopied='0'
 	newcopied='1'
+	# wait until reflow copied value stops changing
 	while [[ $oldcopied != $newcopied ]]; do
 		oldcopied=$newcopied
 		sleep 1
@@ -101,6 +103,7 @@ for nparity in 1 2 3; do
 
 	for disk in ${disks[$(($nparity+2))..$devs]}; do
 		pool_size=$(get_pool_prop size $pool)
+		# Pause at random location near the end of vdev
 		pause=$((((RANDOM << 15) + RANDOM) % pool_size))
 		log_must set_tunable64 RAIDZ_EXPAND_MAX_OFFSET_PAUSE $pause
 
@@ -122,6 +125,7 @@ for nparity in 1 2 3; do
 		log_must check_pool_status $pool "scan" "with 0 errors"
 		log_must check_pool_status $pool "scan" "repaired 0B"
 
+		# Set pause past largest possible offset for this pool
 		pause=$((devs*dev_size_mb*1024*1024))
 		log_must set_tunable64 RAIDZ_EXPAND_MAX_OFFSET_PAUSE $pause
 
