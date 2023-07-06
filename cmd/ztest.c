@@ -897,7 +897,7 @@ usage(boolean_t requested)
 			    option_table[i].short_opt,
 			    option_table[i].long_opt);
 		}
-		(void) fprintf(fp, "  %-40s%s", option,
+		(void) fprintf(fp, "  %-43s%s", option,
 		    option_table[i].comment);
 
 		if (option_table[i].long_opt_param != NULL) {
@@ -1126,6 +1126,15 @@ process_options(int argc, char **argv)
 
 	fini_options();
 
+	/* force compatible options for raidz expand run */
+	if (zo->zo_raidz_expand_test != 0) {
+		zo->zo_mirrors = 0;
+		zo->zo_vdevs = 1;
+		zo->zo_vdev_size = DEFAULT_VDEV_SIZE * 2;
+		zo->zo_raid_do_expand = B_FALSE;
+		raid_kind = "raidz";
+	}
+
 	if (strcmp(raid_kind, "random") == 0) {
 		switch (ztest_random(3)) {
 		case 0:
@@ -1180,8 +1189,9 @@ process_options(int argc, char **argv)
 		/* using eraidz (expandable raidz) */
 		zo->zo_raid_do_expand = B_TRUE;
 
-		/* No top-level mirrors with raidz expansion for now */
+		/* tests expect top-level to be raidz */
 		zo->zo_mirrors = 0;
+		zo->zo_vdevs = 1;
 
 		zo->zo_raid_parity = MIN(zo->zo_raid_parity,
 		    zo->zo_raid_children - 1);
@@ -3998,6 +4008,7 @@ ztest_scratch_thread(void *arg)
 {
 	(void) arg;
 
+	/* wait up to 10 seconds */
 	for (int t = 100; t > 0; t -= 1) {
 		if (raidz_expand_max_offset_pause == 0)
 			thread_exit();
@@ -4028,6 +4039,7 @@ ztest_vdev_raidz_attach(ztest_ds_t *zd, uint64_t id)
 
 	spa_config_enter(spa, SCL_ALL, FTAG, RW_READER);
 
+	/* Only allow attach when raid-kind = 'eraidz' */
 	if (!ztest_opts.zo_raid_do_expand) {
 		spa_config_exit(spa, SCL_ALL, FTAG);
 		goto out;
@@ -7750,6 +7762,7 @@ ztest_freeze(void)
 	spa_t *spa;
 	int numloops = 0;
 
+	/* freeze not supported during RAIDZ expansion */
 	if (ztest_opts.zo_raid_do_expand)
 		return;
 
@@ -8158,9 +8171,8 @@ ztest_raidz_expand_run(ztest_shared_t *zs)
 			spa_config_exit(spa, SCL_CONFIG, FTAG);
 		}
 
-		/*
-		 * XXX - should we clear the reflow pause here?
-		 */
+		/* clear the reflow pause before killing */
+		raidz_expand_max_offset_pause = 0;
 		if (ztest_opts.zo_verbose >= 1) {
 			(void) printf(
 			    "killing raidz expandsion test offset at %llu\n",
@@ -8914,13 +8926,14 @@ main(int argc, char **argv)
 	hasalt = (strlen(ztest_opts.zo_alt_ztest) != 0);
 
 	if (ztest_opts.zo_verbose >= 1) {
-		(void) printf("%"PRIu64" vdevs, %d datasets, %d threads,"
-		    "%d %s disks, %"PRIu64" seconds...\n\n",
+		(void) printf("%"PRIu64" vdevs, %d datasets, %d threads, "
+		    "%d %s disks, parity %d, %"PRIu64" seconds...\n\n",
 		    ztest_opts.zo_vdevs,
 		    ztest_opts.zo_datasets,
 		    ztest_opts.zo_threads,
 		    ztest_opts.zo_raid_children,
 		    ztest_opts.zo_raid_type,
+		    ztest_opts.zo_raid_parity,
 		    ztest_opts.zo_time);
 	}
 

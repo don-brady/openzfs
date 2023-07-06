@@ -61,6 +61,7 @@ function cleanup
 	done
 
 	log_must set_tunable32 PREFETCH_DISABLE $embedded_slog_min_ms
+	log_must set_tunable64 RAIDZ_EXPAND_MAX_OFFSET_PAUSE 0
 }
 
 function wait_expand_paused
@@ -138,6 +139,7 @@ for nparity in 1 2 3; do
 	log_must fill_fs /$pool/fs2 1 128 100 1024 R
 
 	for disk in ${disks[$(($nparity+2))..$devs]}; do
+		# Set pause to some random offset near halfway point
 		pool_size=$(get_pool_prop size $pool)
 		pause=$((((RANDOM << 15) + RANDOM) % pool_size / 2))
 		log_must set_tunable64 RAIDZ_EXPAND_MAX_OFFSET_PAUSE $pause
@@ -150,6 +152,7 @@ for nparity in 1 2 3; do
 		for (( i=0; i<2; i++ )); do
 			test_replace $pool "$devices" $nparity
 
+			# Increase pause by about 25%
 			pause=$((pause + (((RANDOM << 15) + RANDOM) % \
 			    pool_size) / 4))
 			log_must set_tunable64 RAIDZ_EXPAND_MAX_OFFSET_PAUSE $pause
@@ -157,6 +160,7 @@ for nparity in 1 2 3; do
 			wait_expand_paused
 		done
 
+		# Set pause past largest possible offset for this pool
 		pause=$((devs*dev_size_mb*1024*1024))
 		log_must set_tunable64 RAIDZ_EXPAND_MAX_OFFSET_PAUSE $pause
 
