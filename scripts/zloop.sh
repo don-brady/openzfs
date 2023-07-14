@@ -305,6 +305,9 @@ while (( timeout == 0 )) || (( curtime <= (starttime + timeout) )); do
 		vdevs=$((RANDOM % 3))
 		raid_type="draid"
 		;;
+	*)
+		# avoid shellcheck SC2249
+		;;
 	esac
 
 	zopt="$zopt -K $raid_type"
