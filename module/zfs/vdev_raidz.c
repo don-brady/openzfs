@@ -4230,14 +4230,18 @@ spa_raidz_expand_cb(void *arg, zthr_t *zthr)
 			spa_config_exit(spa, SCL_CONFIG, FTAG);
 
 			/*
-			 * This delay will pause the removal around the point
-			 * specified by zfs_remove_max_bytes_pause. We do this
-			 * solely from the test suite or during debugging.
+			 * If requested, pause the reflow when the amount
+			 * specified by raidz_expand_max_offset_pause is reached
+			 *
+			 * This pause is only used during testing or debugging.
+			 *
+			 * XXX Rename once we confirm that we want bytes
 			 */
 			while (raidz_expand_max_offset_pause != 0 &&
-			    raidz_expand_max_offset_pause <= vre->vre_offset &&
-			    !zthr_iscancelled(zthr))
+			    raidz_expand_max_offset_pause <=
+			    vre->vre_bytes_copied && !zthr_iscancelled(zthr)) {
 				delay(hz);
+			}
 
 			mutex_enter(&vre->vre_lock);
 			while (vre->vre_outstanding_bytes >
