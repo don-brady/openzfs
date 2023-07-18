@@ -6853,9 +6853,10 @@ spa_vdev_add(spa_t *spa, nvlist_t *nvroot)
 }
 
 /*
- * Attach a device to a mirror.  The arguments are the path to any device
- * in the mirror, and the nvroot for the new device.  If the path specifies
- * a device that is not mirrored, we automatically insert the mirror vdev.
+ * Attach a device to a vdev specified by its guid.  The vdev type can be
+ * a mirror, a raidz, or a leaf device that is also a top-level (e.g. a
+ * single device). When the vdev is a single device, a mirror vdev will be
+ * automatically inserted.
  *
  * If 'replacing' is specified, the new device is intended to replace the
  * existing device; in this case the two devices are made into their own
@@ -6919,6 +6920,9 @@ spa_vdev_attach(spa_t *spa, uint64_t guid, nvlist_t *nvroot, int replacing,
 		return (spa_vdev_exit(spa, NULL, txg, ENODEV));
 
 	if (oldvd->vdev_ops == &vdev_raidz_ops) {
+		if (!spa_feature_is_enabled(spa, SPA_FEATURE_RAIDZ_EXPANSION))
+			return (spa_vdev_exit(spa, NULL, txg, ENOTSUP));
+
 		raidz = B_TRUE;
 		/*
 		 * Can't expand a raidz while prior expand is in progress.
