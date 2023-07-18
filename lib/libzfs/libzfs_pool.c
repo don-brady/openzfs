@@ -3377,6 +3377,7 @@ zpool_vdev_attach(zpool_handle_t *zhp, const char *old_disk,
 	boolean_t avail_spare, l2cache, islog;
 	uint64_t val;
 	char *newname;
+	const char *type;
 	nvlist_t **child;
 	uint_t children;
 	nvlist_t *config_root;
@@ -3408,6 +3409,14 @@ zpool_vdev_attach(zpool_handle_t *zhp, const char *old_disk,
 	    zfeature_lookup_guid("org.openzfs:device_rebuild", NULL) != 0) {
 		zfs_error_aux(hdl, dgettext(TEXT_DOMAIN,
 		    "the loaded zfs module doesn't support device rebuilds"));
+		return (zfs_error(hdl, EZFS_POOL_NOTSUP, errbuf));
+	}
+
+	type = fnvlist_lookup_string(tgt, ZPOOL_CONFIG_TYPE);
+	if (strcmp(type, VDEV_TYPE_RAIDZ) == 0 &&
+	    zfeature_lookup_guid("org.openzfs:raidz_expansion", NULL) != 0) {
+		zfs_error_aux(hdl, dgettext(TEXT_DOMAIN,
+		    "the loaded zfs module doesn't support raidz expansion"));
 		return (zfs_error(hdl, EZFS_POOL_NOTSUP, errbuf));
 	}
 
@@ -3478,6 +3487,13 @@ zpool_vdev_attach(zpool_handle_t *zhp, const char *old_disk,
 				zfs_error_aux(hdl, dgettext(TEXT_DOMAIN,
 				    "cannot replace a replacing device"));
 			}
+		} else if (strcmp(type, VDEV_TYPE_RAIDZ) == 0) {
+			char status[64] = {0};
+			zpool_prop_get_feature(zhp,
+			    "feature@raidz_expansion", status, 63);
+			zfs_error_aux(hdl, dgettext(TEXT_DOMAIN,
+			    "raidz_expansion feature must be enabled "
+			    "in order to attach a device to raidz"));
 		} else {
 			char status[64] = {0};
 			zpool_prop_get_feature(zhp,
