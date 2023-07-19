@@ -291,8 +291,14 @@ while (( timeout == 0 )) || (( curtime <= (starttime + timeout) )); do
 		#   P2: 5 - 9 disks
 		#   P3: 7 - 11 disks
 		raid_children=$(((RANDOM % 5) + (parity * 2) + 1))
-		raid_type="eraidz"
-		# TBD - flip btween -K eraidz and -X <value> ?
+
+		# 1/3 of the time use a dedicated '-X' raidz expansion test
+		if [[ $((RANDOM % 3)) -eq 0 ]]; then
+			zopt="$zopt -X -t 16"
+			raid_type="raidz"
+		else
+			raid_type="eraidz"
+		fi
 		;;
 
 	# fully randomized dRAID (sans mirror/raidz)
