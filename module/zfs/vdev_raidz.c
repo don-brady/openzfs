@@ -550,12 +550,6 @@ vdev_raidz_map_alloc_expanded(zio_t *zio,
 	rm->rm_skipstart = bc;
 	asize = 0;
 
-#if 1
-	zfs_dbgmsg("rm=%px s=%d q=%d r=%d bc=%d nrows=%d cols=%d rfo=%llx",
-	    rm, (int)s, (int)q, (int)r, (int)bc, (int)rows, (int)cols,
-	    (long long)reflow_offset_synced);
-#endif
-
 	for (uint64_t row = 0; row < rows; row++) {
 		boolean_t row_use_scratch = B_FALSE;
 		raidz_row_t *rr = vdev_raidz_row_alloc(cols);
@@ -660,13 +654,6 @@ vdev_raidz_map_alloc_expanded(zio_t *zio,
 					off = r * rows +
 					    (dc - r) * (rows - 1) + row;
 				}
-#if 1
-				zfs_dbgmsg("rm=%px row=%d c=%d dc=%d off=%u "
-				    "devidx=%u offset=%llu rpc=%u",
-				    rm, (int)row, (int)c, (int)dc, (int)off,
-				    (int)child_id, (long long)child_offset,
-				    (int)row_phys_cols);
-#endif
 				rc->rc_size = 1ULL << ashift;
 				rc->rc_abd = abd_get_offset_struct(
 				    &rc->rc_abdstruct, abd, off << ashift,
@@ -2585,13 +2572,6 @@ vdev_raidz_io_done_verified(zio_t *zio, raidz_row_t *rr)
 	 * Note that we also regenerate parity when resilvering so we
 	 * can write it out to failed devices later.
 	 */
-#if 1
-	zfs_dbgmsg("parity_errors=%u parity_untried=%u data_errors=%u "
-	    "verifying=%s",
-	    parity_errors, parity_untried, data_errors,
-	    (parity_errors + parity_untried <
-	    rr->rr_firstdatacol - data_errors) ? "yes" : "no");
-#endif
 	if (parity_errors + parity_untried <
 	    rr->rr_firstdatacol - data_errors ||
 	    (zio->io_flags & ZIO_FLAG_RESILVER)) {
@@ -2712,18 +2692,6 @@ raidz_simulate_failure(int physical_width, int original_width, int ashift,
 	uint64_t sector_id =
 	    physical_width * (rc->rc_offset >> ashift) +
 	    rc->rc_devidx;
-
-#if 1
-	zfs_dbgmsg("raidz_simulate_failure(pw=%u lw=%u ashift=%u i=%u "
-	    "rc_offset=%llx rc_devidx=%u sector_id=%llu",
-	    physical_width,
-	    original_width,
-	    ashift,
-	    i,
-	    (long long)rc->rc_offset,
-	    (int)rc->rc_devidx,
-	    (long long)sector_id);
-#endif
 
 	for (int w = physical_width; w >= original_width; w--) {
 		if (i < w) {
@@ -4159,6 +4127,7 @@ spa_raidz_expand_cb(void *arg, zthr_t *zthr)
 
 	uint64_t guid = raidvd->vdev_guid;
 
+	/* Iterate over all the remaining metaslabs */
 	for (uint64_t i = vre->vre_offset >> raidvd->vdev_ms_shift;
 	    i < raidvd->vdev_ms_count &&
 	    !zthr_iscancelled(zthr) &&
