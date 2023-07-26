@@ -3488,9 +3488,6 @@ zpool_vdev_attach(zpool_handle_t *zhp, const char *old_disk,
 				    "cannot replace a replacing device"));
 			}
 		} else if (strcmp(type, VDEV_TYPE_RAIDZ) == 0) {
-			char status[64] = {0};
-			zpool_prop_get_feature(zhp,
-			    "feature@raidz_expansion", status, 63);
 			zfs_error_aux(hdl, dgettext(TEXT_DOMAIN,
 			    "raidz_expansion feature must be enabled "
 			    "in order to attach a device to raidz"));
@@ -3553,6 +3550,18 @@ zpool_vdev_attach(zpool_handle_t *zhp, const char *old_disk,
 		 */
 		(void) zfs_error(hdl, EZFS_DEVOVERFLOW, errbuf);
 		break;
+
+	case ENXIO:
+		/*
+		 * The existing raidz vdev has offline children
+		 */
+		if (strcmp(type, VDEV_TYPE_RAIDZ) == 0) {
+			zfs_error_aux(hdl, dgettext(TEXT_DOMAIN,
+			    "raidz vdev has offline devices"));
+			(void) zfs_error(hdl, EZFS_BADDEV, errbuf);
+			break;
+		}
+		/* fall through */
 
 	default:
 		(void) zpool_standard_error(hdl, errno, errbuf);
