@@ -7079,8 +7079,17 @@ spa_vdev_attach(spa_t *spa, uint64_t guid, nvlist_t *nvroot, int replacing,
 	/*
 	 * RAIDZ-expansion-specific checks.
 	 */
-	if (raidz && vdev_raidz_attach_check(newvd) != 0) {
-		return (spa_vdev_exit(spa, newrootvd, txg, ENOTSUP));
+	if (raidz) {
+		if (vdev_raidz_attach_check(newvd) != 0)
+			return (spa_vdev_exit(spa, newrootvd, txg, ENOTSUP));
+
+		/* Fail early if vdev is not healthy (has offline children) */
+		for (int i = 0; i < oldvd->vdev_children; i++) {
+			if (vdev_is_dead(oldvd->vdev_child[i])) {
+				return (spa_vdev_exit(spa, newrootvd, txg,
+				    ENXIO));
+			}
+		}
 	}
 
 	if (raidz) {

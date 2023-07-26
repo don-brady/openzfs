@@ -4074,6 +4074,13 @@ ztest_vdev_raidz_attach(ztest_ds_t *zd, uint64_t id)
 	root = make_vdev_root(newpath, NULL, NULL, newsize, ashift, NULL,
 	    0, 0, 1);
 
+	/*
+	 * 50% of the time, set raidz_expand_max_offset_pause to cause
+	 * raidz_reflow_scratch_sync() and vdev_raidz_reflow_copy_scratch()
+	 * to pause at a certain point and then kill the test after 10
+	 * seconds so raidz_scratch_verify() can confirm consistency when
+	 * the pool is imported.
+	 */
 	if (ztest_random(2) == 0 && expected_error == 0) {
 		raidz_expand_max_offset_pause =
 		    ztest_random(RAIDZ_EXPAND_PAUSE_SCRATCH_NOT_IN_USE) + 1;
@@ -4085,7 +4092,7 @@ ztest_vdev_raidz_attach(ztest_ds_t *zd, uint64_t id)
 
 	nvlist_free(root);
 
-	if (error == EOVERFLOW ||
+	if (error == EOVERFLOW || error == ENXIO ||
 	    error == ZFS_ERR_CHECKPOINT_EXISTS ||
 	    error == ZFS_ERR_DISCARDING_CHECKPOINT)
 		expected_error = error;
@@ -8203,7 +8210,7 @@ ztest_generic_run(ztest_shared_t *zs, spa_t *spa)
 }
 
 /*
- * Setup our test context and Kick off threads to run tests on all datasets
+ * Setup our test context and kick off threads to run tests on all datasets
  * in parallel.
  */
 static void

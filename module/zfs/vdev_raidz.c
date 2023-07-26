@@ -3202,8 +3202,6 @@ vdev_raidz_io_done(zio_t *zio)
 {
 	raidz_map_t *rm = zio->io_vsd;
 
-	zfs_dbgmsg("vdev_raidz_io_done(%px)", zio);
-
 	ASSERT(zio->io_bp != NULL);
 	if (zio->io_type == ZIO_TYPE_WRITE) {
 		for (int i = 0; i < rm->rm_nrows; i++) {
@@ -3824,7 +3822,7 @@ raidz_reflow_scratch_sync(void *arg, dmu_tx_t *tx)
 	    1 << ashift);
 
 	/*
-	 * The scratch space much be large enough to get us to the point
+	 * The scratch space must be large enough to get us to the point
 	 * that one row does not overlap itself when moved.  This is checked
 	 * by vdev_raidz_attach_check().
 	 */
@@ -3848,6 +3846,7 @@ raidz_reflow_scratch_sync(void *arg, dmu_tx_t *tx)
 	 */
 	pio = zio_root(spa, NULL, NULL, 0);
 	for (int i = 0; i < raidvd->vdev_children - 1; i++) {
+		ASSERT0(vdev_is_dead(raidvd->vdev_child[i]));
 		zio_nowait(zio_vdev_child_io(pio, NULL, raidvd->vdev_child[i],
 		    0, abds[i], read_size, ZIO_TYPE_READ,
 		    ZIO_PRIORITY_ASYNC_READ, 0, raidz_scratch_child_done, pio));
@@ -4106,6 +4105,7 @@ spa_raidz_expand_cb_check(void *arg, zthr_t *zthr)
 	    !spa->spa_raidz_expand->vre_waiting_for_resilver);
 }
 
+/* RAIDZ expansion background thread */
 static void
 spa_raidz_expand_cb(void *arg, zthr_t *zthr)
 {
@@ -4561,7 +4561,6 @@ vdev_raidz_init(spa_t *spa, nvlist_t *nv, void **tsd)
 
 	boolean_t reflow_in_progress =
 	    nvlist_exists(nv, ZPOOL_CONFIG_RAIDZ_EXPANDING);
-	zfs_dbgmsg("reflow_in_progress=%u", (int)reflow_in_progress);
 	if (reflow_in_progress) {
 		spa->spa_raidz_expand = &vdrz->vn_vre;
 		vdrz->vn_vre.vre_state = DSS_SCANNING;
@@ -4569,7 +4568,7 @@ vdev_raidz_init(spa_t *spa, nvlist_t *nv, void **tsd)
 
 	vdrz->vd_original_width = children;
 	uint64_t *txgs;
-	unsigned int txgs_size;
+	unsigned int txgs_size = 0;
 	error = nvlist_lookup_uint64_array(nv, ZPOOL_CONFIG_RAIDZ_EXPAND_TXGS,
 	    &txgs, &txgs_size);
 	if (error == 0) {
@@ -4586,8 +4585,11 @@ vdev_raidz_init(spa_t *spa, nvlist_t *nv, void **tsd)
 
 		vdrz->vd_original_width = vdrz->vd_physical_width - txgs_size;
 	}
-	if (reflow_in_progress)
+	if (reflow_in_progress) {
 		vdrz->vd_original_width--;
+		zfs_dbgmsg("reflow_in_progress, %u wide, %d prior expansions",
+		    children, txgs_size);
+	}
 
 	*tsd = vdrz;
 
