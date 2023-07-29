@@ -5034,8 +5034,7 @@ spa_load_impl(spa_t *spa, spa_import_type_t type, const char **ereport)
 		 * Before we do any zio_write's, complete the raidz expansion
 		 * scratch space copying, if necessary.
 		 */
-		if (RRSS_GET_STATE(&spa->spa_uberblock) !=
-		    RRSS_SCRATCH_NOT_IN_USE) {
+		if (RRSS_GET_STATE(&spa->spa_uberblock) == RRSS_SCRATCH_VALID) {
 			vdev_raidz_reflow_copy_scratch(spa);
 		}
 
