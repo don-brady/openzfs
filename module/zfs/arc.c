@@ -5352,7 +5352,7 @@ arc_buf_access(arc_buf_t *buf)
 
 	if (hdr->b_l1hdr.b_state == arc_anon || HDR_EMPTY(hdr)) {
 		mutex_exit(hash_lock);
-		ARCSTAT_BUMP(arcstat_access_skip);
+		ARCSTAT_BUMP(arcstat_access_skip); // <- 6
 		return;
 	}
 
