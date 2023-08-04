@@ -5034,10 +5034,8 @@ spa_load_impl(spa_t *spa, spa_import_type_t type, const char **ereport)
 		 * Before we do any zio_write's, complete the raidz expansion
 		 * scratch space copying, if necessary.
 		 */
-		if (RRSS_GET_STATE(&spa->spa_uberblock) !=
-		    RRSS_SCRATCH_NOT_IN_USE) {
+		if (RRSS_GET_STATE(&spa->spa_uberblock) == RRSS_SCRATCH_VALID)
 			vdev_raidz_reflow_copy_scratch(spa);
-		}
 
 		/*
 		 * In case of a checkpoint rewind, log the original txg
@@ -7052,9 +7050,12 @@ spa_vdev_attach(spa_t *spa, uint64_t guid, nvlist_t *nvroot, int replacing,
 		if (vdev_raidz_attach_check(newvd) != 0)
 			return (spa_vdev_exit(spa, newrootvd, txg, ENOTSUP));
 
-		/* Fail early if vdev is not healthy (has offline children) */
+		/*
+		 * Fail early if a child is not healthy or being replaced
+		 */
 		for (int i = 0; i < oldvd->vdev_children; i++) {
-			if (vdev_is_dead(oldvd->vdev_child[i])) {
+			if (vdev_is_dead(oldvd->vdev_child[i]) ||
+			    !oldvd->vdev_child[i]->vdev_ops->vdev_op_leaf) {
 				return (spa_vdev_exit(spa, newrootvd, txg,
 				    ENXIO));
 			}
