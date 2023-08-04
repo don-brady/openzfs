@@ -3557,7 +3557,8 @@ zpool_vdev_attach(zpool_handle_t *zhp, const char *old_disk,
 		 */
 		if (strcmp(type, VDEV_TYPE_RAIDZ) == 0) {
 			zfs_error_aux(hdl, dgettext(TEXT_DOMAIN,
-			    "raidz vdev has offline devices"));
+			    "raidz vdev has devices that are are offline or "
+			    "being replaced"));
 			(void) zfs_error(hdl, EZFS_BADDEV, errbuf);
 			break;
 		}
