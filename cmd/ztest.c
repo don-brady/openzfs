@@ -7520,6 +7520,8 @@ typedef struct ztest_raidz_expand_io {
 	uint64_t	rzx_amount;
 	uint64_t	rzx_bufsize;
 	const void	*rzx_buffer;
+	uint64_t	rzx_alloc_max;
+	spa_t		*rzx_spa;
 } ztest_expand_io_t;
 
 #undef OD_ARRAY_SIZE
@@ -7537,6 +7539,7 @@ ztest_rzx_thread(void *arg)
 	int batchsize;
 	int od_size;
 	ztest_ds_t *zd = &ztest_ds[info->rzx_id % ztest_opts.zo_datasets];
+	spa_t *spa = info->rzx_spa;
 
 	od_size = sizeof (ztest_od_t) * OD_ARRAY_SIZE;
 	od = umem_alloc(od_size, UMEM_NOFAIL);
@@ -7554,14 +7557,20 @@ ztest_rzx_thread(void *arg)
 
 	for (uint64_t offset = 0, written = 0; written < info->rzx_amount;
 	    offset += info->rzx_bufsize) {
-		for (int i = 0; i < batchsize; i++) {
+		/* write to 10 objects */
+		for (int i = 0; i < batchsize && written < info->rzx_amount;
+		    i++) {
 			(void) pthread_rwlock_rdlock(&zd->zd_zilog_lock);
 			ztest_write(zd, od[i].od_object, offset,
 			    info->rzx_bufsize, info->rzx_buffer);
 			(void) pthread_rwlock_unlock(&zd->zd_zilog_lock);
 			written += info->rzx_bufsize;
-			if (written >= info->rzx_amount)
-				break;
+		}
+		txg_wait_synced(spa_get_dsl(spa), 0);
+		/* due to inflation, we'll typically bail here */
+		if (metaslab_class_get_alloc(spa_normal_class(spa)) >
+		    info->rzx_alloc_max) {
+			break;
 		}
 	}
 
@@ -8013,8 +8022,10 @@ ztest_raidz_expand_run(ztest_shared_t *zs, spa_t *spa)
 	/* Aim for roughly 25% of allocatable space up to 1GB */
 	alloc_goal = (vdev_get_min_asize(rzvd) * data_disks) / total_disks;
 	alloc_goal = MIN(alloc_goal >> 2, 1024*1024*1024);
-	if (ztest_opts.zo_verbose >= 1)
-		(void) printf("adding data to pool '%s'\n", ztest_opts.zo_pool);
+	if (ztest_opts.zo_verbose >= 1) {
+		(void) printf("adding data to pool '%s', goal %llu bytes\n",
+		    ztest_opts.zo_pool, (u_longlong_t)alloc_goal);
+	}
 
 	/*
 	 * Kick off all the I/O generators that run in parallel.
@@ -8029,6 +8040,8 @@ ztest_raidz_expand_run(ztest_shared_t *zs, spa_t *spa)
 		thread_args[t].rzx_amount = alloc_goal / threads;
 		thread_args[t].rzx_bufsize = bufsize;
 		thread_args[t].rzx_buffer = buffer;
+		thread_args[t].rzx_alloc_max = alloc_goal;
+		thread_args[t].rzx_spa = spa;
 		run_threads[t] = thread_create(NULL, 0, ztest_rzx_thread,
 		    &thread_args[t], 0, NULL, TS_RUN | TS_JOINABLE,
 		    defclsyspri);
