@@ -3943,8 +3943,10 @@ static void
 raidz_scratch_verify(void)
 {
 	spa_t *spa;
-	uint64_t pause, offset;
+	uint64_t write_size, logical_size, offset;
 	raidz_reflow_scratch_state_t state;
+	vdev_raidz_expand_t *vre;
+	vdev_t *raidvd;
 
 	ASSERT(raidz_expand_max_offset_pause == 0);
 
@@ -3963,22 +3965,57 @@ raidz_scratch_verify(void)
 
 	ASSERT3U(RRSS_GET_OFFSET(&spa->spa_uberblock), !=, UINT64_MAX);
 
-	pause = ztest_scratch_state->zs_raidz_scratch_verify_pause;
+	mutex_enter(&ztest_vdev_lock);
+
+	spa_config_enter(spa, SCL_ALL, FTAG, RW_READER);
+
+	vre = spa->spa_raidz_expand;
+	raidvd = vdev_lookup_top(spa, vre->vre_vdev_id);
 	offset = RRSS_GET_OFFSET(&spa->spa_uberblock);
 	state = RRSS_GET_STATE(&spa->spa_uberblock);
+	write_size = P2ALIGN(VDEV_BOOT_SIZE, 1 << raidvd->vdev_ashift);
+	logical_size = write_size * raidvd->vdev_children;
 
-	if (pause < RAIDZ_EXPAND_PAUSE_SCRATCH_VALID) {
-		ASSERT3U(offset, ==, 0);
-		ASSERT3U(state, ==, RRSS_SCRATCH_NOT_IN_USE);
-	} else if (pause >= RAIDZ_EXPAND_PAUSE_SCRATCH_VALID &&
-	    pause <= RAIDZ_EXPAND_PAUSE_SCRATCH_REFLOWED) {
-		ASSERT3U(offset, >=, pause);
-		ASSERT3U(state, ==, RRSS_SCRATCH_VALID);
-	} else {
-		ASSERT(pause <= RAIDZ_EXPAND_PAUSE_SCRATCH_NOT_IN_USE);
-		ASSERT3U(offset, >, pause);
-		ASSERT3U(state, ==, RRSS_SCRATCH_NOT_IN_USE);
+	switch (state) {
+		/*
+		 * Initial state of reflow process.  RAIDZ expansion was
+		 * requested by user, but scratch object was not created.
+		 */
+		case RRSS_SCRATCH_NOT_IN_USE:
+			ASSERT3U(offset, ==, 0);
+			break;
+
+		/*
+		 * Scratch object was synced and stored in boot area.
+		 */
+		case RRSS_SCRATCH_VALID:
+
+		/*
+		 * Scratch object was synced back to raidz start offset,
+		 * raidz is ready for sector by sector reflow process.
+		 */
+		case RRSS_SCRATCH_INVALID_SYNCED:
+
+		/*
+		 * Scratch object was synced back to raidz start offset
+		 * on zpool importing, raidz is ready for sector by sector
+		 * reflow process.
+		 */
+		case RRSS_SCRATCH_INVALID_SYNCED_ON_IMPORT:
+			ASSERT3U(offset, ==, logical_size);
+			break;
+
+		/*
+		 * Sector by sector reflow process started.
+		 */
+		case RRSS_SCRATCH_INVALID_SYNCED_REFLOW:
+			ASSERT3U(offset, >=, logical_size);
+			break;
 	}
+
+	spa_config_exit(spa, SCL_ALL, FTAG);
+
+	mutex_exit(&ztest_vdev_lock);
 
 	ztest_scratch_state->zs_raidz_scratch_verify_pause = 0;
 

@@ -1762,7 +1762,7 @@ vdev_uberblock_sync(zio_t *zio, uint64_t *good_writes,
 	 * uberblock.
 	 */
 	int m = spa_multihost(vd->vdev_spa) ? MMP_BLOCKS_PER_LABEL : 0;
-	int n = (ub->ub_txg - RRSS_GET_STATE(ub)) %
+	int n = (ub->ub_txg - (RRSS_GET_STATE(ub) == RRSS_SCRATCH_VALID)) %
 	    (VDEV_UBERBLOCK_COUNT(vd) - m);
 
 	/* Copy the uberblock_t into the ABD */

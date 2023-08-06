@@ -3504,7 +3504,7 @@ raidz_reflow_sync(void *arg, dmu_tx_t *tx)
 	    (long long)vre->vre_offset_pertxg[txgoff],
 	    (long long)vre->vre_failed_offset);
 	RAIDZ_REFLOW_SET(&spa->spa_uberblock,
-	    RRSS_SCRATCH_NOT_IN_USE, new_offset);
+	    RRSS_SCRATCH_INVALID_SYNCED_REFLOW, new_offset);
 	vre->vre_offset_pertxg[txgoff] = 0;
 	zfs_rangelock_exit(lr);
 
@@ -3965,7 +3965,7 @@ raidz_reflow_scratch_sync(void *arg, dmu_tx_t *tx)
 	 * scratch space, we would lose the regular writes.
 	 */
 	RAIDZ_REFLOW_SET(&spa->spa_ubsync,
-	    RRSS_SCRATCH_NOT_IN_USE, logical_size);
+	    RRSS_SCRATCH_INVALID_SYNCED, logical_size);
 	spa->spa_ubsync.ub_timestamp++;
 	ASSERT0(vdev_uberblock_sync_list(&spa->spa_root_vdev, 1,
 	    &spa->spa_ubsync, ZIO_FLAG_CONFIG_WRITER));
@@ -4067,7 +4067,7 @@ vdev_raidz_reflow_copy_scratch(spa_t *spa)
 	 * Update uberblock.
 	 */
 	RAIDZ_REFLOW_SET(&spa->spa_ubsync,
-	    RRSS_SCRATCH_NOT_IN_USE, logical_size);
+	    RRSS_SCRATCH_INVALID_SYNCED_ON_IMPORT, logical_size);
 	spa->spa_ubsync.ub_timestamp++;
 	VERIFY0(vdev_uberblock_sync_list(&spa->spa_root_vdev, 1,
 	    &spa->spa_ubsync, ZIO_FLAG_CONFIG_WRITER));

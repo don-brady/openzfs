@@ -78,6 +78,9 @@ extern "C" {
 typedef enum raidz_reflow_scratch_state {
 	RRSS_SCRATCH_NOT_IN_USE = 0,
 	RRSS_SCRATCH_VALID,
+	RRSS_SCRATCH_INVALID_SYNCED,
+	RRSS_SCRATCH_INVALID_SYNCED_ON_IMPORT,
+	RRSS_SCRATCH_INVALID_SYNCED_REFLOW
 } raidz_reflow_scratch_state_t;
 
 #define	RRSS_GET_OFFSET(ub)	\
