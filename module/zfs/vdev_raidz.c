@@ -2330,15 +2330,6 @@ vdev_raidz_io_start(zio_t *zio)
 
 	uint64_t logical_width = vdev_raidz_get_logical_width(vdrz,
 	    BP_PHYSICAL_BIRTH(zio->io_bp));
-	zfs_dbgmsg("zio=%px bm=%llu/%llu/%llu/%llu phys_birth=%llu "
-	    "logical_width=%llu",
-	    zio,
-	    (long long)zio->io_bookmark.zb_objset,
-	    (long long)zio->io_bookmark.zb_object,
-	    (long long)zio->io_bookmark.zb_level,
-	    (long long)zio->io_bookmark.zb_blkid,
-	    (long long)BP_PHYSICAL_BIRTH(zio->io_bp),
-	    (long long)logical_width);
 	if (logical_width != vdrz->vd_physical_width) {
 		zfs_locked_range_t *lr = NULL;
 		uint64_t synced_offset = UINT64_MAX;
@@ -2377,14 +2368,16 @@ vdev_raidz_io_start(zio_t *zio)
 				next_offset = synced_offset;
 			}
 		}
-		zfs_dbgmsg("zio=%px %s io_offset=%llu offset_synced=%lld "
-		    "next_offset=%lld use_scratch=%u",
-		    zio,
-		    zio->io_type == ZIO_TYPE_WRITE ? "WRITE" : "READ",
-		    (long long)zio->io_offset,
-		    (long long)synced_offset,
-		    (long long)next_offset,
-		    use_scratch);
+		if (use_scratch) {
+			zfs_dbgmsg("zio=%px %s io_offset=%llu offset_synced="
+			    "%lld next_offset=%lld use_scratch=%u",
+			    zio,
+			    zio->io_type == ZIO_TYPE_WRITE ? "WRITE" : "READ",
+			    (long long)zio->io_offset,
+			    (long long)synced_offset,
+			    (long long)next_offset,
+			    use_scratch);
+		}
 
 		rm = vdev_raidz_map_alloc_expanded(zio,
 		    tvd->vdev_ashift, vdrz->vd_physical_width,
@@ -3604,14 +3597,9 @@ raidz_reflow_write_done(zio_t *zio)
 
 	abd_free(zio->io_abd);
 
-	zfs_dbgmsg("completed reflow offset=%llu size=%llu txg=%llu err=%u",
-	    (long long)rra->rra_lr->lr_offset,
-	    (long long)rra->rra_lr->lr_length,
-	    (long long)rra->rra_txg,
-	    zio->io_error);
-
 	mutex_enter(&vre->vre_lock);
 	if (zio->io_error != 0) {
+		/* Force a reflow pause on errors */
 		vre->vre_failed_offset =
 		    MIN(vre->vre_failed_offset, rra->rra_lr->lr_offset);
 	}
@@ -3658,6 +3646,7 @@ err=%u partial_dtl_empty=%u missing_dtl_empty=%u",
 		    vdev_dtl_empty(zio->io_vd, DTL_PARTIAL),
 		    vdev_dtl_empty(zio->io_vd, DTL_MISSING));
 		mutex_enter(&vre->vre_lock);
+		/* Force a reflow pause on errors */
 		vre->vre_failed_offset =
 		    MIN(vre->vre_failed_offset, rra->rra_lr->lr_offset);
 		mutex_exit(&vre->vre_lock);
@@ -3748,9 +3737,6 @@ raidz_reflow_impl(vdev_t *vd, vdev_raidz_expand_t *vre, range_tree_t *rt,
 	    offset, length, RL_WRITER);
 	rra->rra_txg = dmu_tx_get_txg(tx);
 
-	zfs_dbgmsg("initiating reflow write offset=%llu length=%llu",
-	    (long long)offset, (long long)length);
-
 	raidz_reflow_record_progress(vre, offset + length, tx);
 
 	mutex_enter(&vre->vre_lock);
@@ -3805,12 +3791,21 @@ raidz_scratch_child_done(zio_t *zio)
 	mutex_exit(&pio->io_lock);
 }
 
+/*
+ * Reflow the beginning portion of the vdev into an intermediate scratch area
+ * in memory and on disk. This operation must be persisted on disk before we
+ * proceed to overwrite the beginning portion with the reflowed data.
+ *
+ * This multi-step task can fail to complete if disk errors are encountered
+ * and we can return here after a pause (waiting for disk to become healthy).
+ */
 static void
 raidz_reflow_scratch_sync(void *arg, dmu_tx_t *tx)
 {
 	vdev_raidz_expand_t *vre = arg;
 	spa_t *spa = dmu_tx_pool(tx)->dp_spa;
 	zio_t *pio;
+	int error;
 
 	spa_config_enter(spa, SCL_STATE, FTAG, RW_READER);
 	vdev_t *raidvd = vdev_lookup_top(spa, vre->vre_vdev_id);
@@ -3842,16 +3837,61 @@ raidz_reflow_scratch_sync(void *arg, dmu_tx_t *tx)
 	raidz_expand_pause(1);
 
 	/*
+	 * If we have already written the scratch area then we must read from
+	 * there, since new writes were redirected there while we were paused
+	 * or the original location may have been partially overwritten with
+	 * reflowed data.
+	 */
+	if (RRSS_GET_STATE(&spa->spa_ubsync) == RRSS_SCRATCH_VALID) {
+		VERIFY3U(RRSS_GET_OFFSET(&spa->spa_ubsync), ==, logical_size);
+		/*
+		 * Read from scratch space.
+		 */
+		pio = zio_root(spa, NULL, NULL, ZIO_FLAG_CANFAIL);
+		for (int i = 0; i < raidvd->vdev_children; i++) {
+			/*
+			 * Note: zio_vdev_child_io() adds VDEV_LABEL_START_SIZE
+			 * to the offset to calculate the physical offset to
+			 * write to.  Passing in a negative offset makes us
+			 * access the scratch area.
+			 */
+			zio_nowait(zio_vdev_child_io(pio, NULL,
+			    raidvd->vdev_child[i],
+			    VDEV_BOOT_OFFSET - VDEV_LABEL_START_SIZE, abds[i],
+			    write_size, ZIO_TYPE_READ, ZIO_PRIORITY_ASYNC_READ,
+			    ZIO_FLAG_CANFAIL, raidz_scratch_child_done, pio));
+		}
+		error = zio_wait(pio);
+		if (error != 0) {
+			zfs_dbgmsg("reflow: error %d readoing scratch location",
+			    error);
+			goto io_error_exit;
+		}
+		goto overwrite;
+	}
+
+	/*
 	 * Read from original location.
 	 */
-	pio = zio_root(spa, NULL, NULL, 0);
+	pio = zio_root(spa, NULL, NULL, ZIO_FLAG_CANFAIL);
 	for (int i = 0; i < raidvd->vdev_children - 1; i++) {
 		ASSERT0(vdev_is_dead(raidvd->vdev_child[i]));
 		zio_nowait(zio_vdev_child_io(pio, NULL, raidvd->vdev_child[i],
 		    0, abds[i], read_size, ZIO_TYPE_READ,
-		    ZIO_PRIORITY_ASYNC_READ, 0, raidz_scratch_child_done, pio));
+		    ZIO_PRIORITY_ASYNC_READ, ZIO_FLAG_CANFAIL,
+		    raidz_scratch_child_done, pio));
 	}
-	zio_wait(pio);
+	error = zio_wait(pio);
+	if (error != 0) {
+		zfs_dbgmsg("reflow: error %d reading original location", error);
+io_error_exit:
+		for (int i = 0; i < raidvd->vdev_children; i++)
+			abd_free(abds[i]);
+		kmem_free(abds, raidvd->vdev_children * sizeof (abd_t *));
+		zfs_rangelock_exit(lr);
+		spa_config_exit(spa, SCL_STATE, FTAG);
+		return;
+	}
 
 	/*
 	 * Reflow in memory.
@@ -3883,7 +3923,7 @@ raidz_reflow_scratch_sync(void *arg, dmu_tx_t *tx)
 	/*
 	 * Write to scratch location (boot area).
 	 */
-	pio = zio_root(spa, NULL, NULL, 0);
+	pio = zio_root(spa, NULL, NULL, ZIO_FLAG_CANFAIL);
 	for (int i = 0; i < raidvd->vdev_children; i++) {
 		/*
 		 * Note: zio_vdev_child_io() adds VDEV_LABEL_START_SIZE to
@@ -3892,18 +3932,20 @@ raidz_reflow_scratch_sync(void *arg, dmu_tx_t *tx)
 		 */
 		zio_nowait(zio_vdev_child_io(pio, NULL, raidvd->vdev_child[i],
 		    VDEV_BOOT_OFFSET - VDEV_LABEL_START_SIZE, abds[i],
-		    write_size, ZIO_TYPE_WRITE,
-		    ZIO_PRIORITY_ASYNC_WRITE, 0,
-		    raidz_scratch_child_done, pio));
+		    write_size, ZIO_TYPE_WRITE, ZIO_PRIORITY_ASYNC_WRITE,
+		    ZIO_FLAG_CANFAIL, raidz_scratch_child_done, pio));
 	}
-	zio_wait(pio);
+	error = zio_wait(pio);
+	if (error != 0) {
+		zfs_dbgmsg("reflow: error %d writing scratch location", error);
+		goto io_error_exit;
+	}
 	pio = zio_root(spa, NULL, NULL, 0);
 	zio_flush(pio, raidvd);
 	zio_wait(pio);
 
 	zfs_dbgmsg("reflow: wrote %llu bytes (logical) to scratch area",
 	    (long long)logical_size);
-
 	raidz_expand_pause(3);
 
 	/*
@@ -3915,14 +3957,12 @@ raidz_reflow_scratch_sync(void *arg, dmu_tx_t *tx)
 	 * Note: ub_timestamp is bumped so that vdev_uberblock_compare()
 	 * will prefer this uberblock.
 	 */
-	RAIDZ_REFLOW_SET(&spa->spa_ubsync,
-	    RRSS_SCRATCH_VALID, logical_size);
+	RAIDZ_REFLOW_SET(&spa->spa_ubsync, RRSS_SCRATCH_VALID, logical_size);
 	spa->spa_ubsync.ub_timestamp++;
 	ASSERT0(vdev_uberblock_sync_list(&spa->spa_root_vdev, 1,
 	    &spa->spa_ubsync, ZIO_FLAG_CONFIG_WRITER));
 	if (spa_multihost(spa))
 		mmp_update_uberblock(spa, &spa->spa_ubsync);
-
 
 	zfs_dbgmsg("reflow: uberblock updated "
 	    "(txg %llu, SCRATCH_VALID, size %llu, ts %llu)",
@@ -3935,21 +3975,35 @@ raidz_reflow_scratch_sync(void *arg, dmu_tx_t *tx)
 	/*
 	 * Overwrite with reflow'ed data.
 	 */
-	pio = zio_root(spa, NULL, NULL, 0);
+overwrite:
+	pio = zio_root(spa, NULL, NULL, ZIO_FLAG_CANFAIL);
 	for (int i = 0; i < raidvd->vdev_children; i++) {
 		zio_nowait(zio_vdev_child_io(pio, NULL, raidvd->vdev_child[i],
 		    0, abds[i], write_size, ZIO_TYPE_WRITE,
-		    ZIO_PRIORITY_ASYNC_WRITE, 0,
+		    ZIO_PRIORITY_ASYNC_WRITE, ZIO_FLAG_CANFAIL,
 		    raidz_scratch_child_done, pio));
 	}
-	zio_wait(pio);
+	error = zio_wait(pio);
+	if (error != 0) {
+		/*
+		 * When we exit early here and drop the range lock, new
+		 * writes will go into the scratch area so we'll need to
+		 * read from there when we return after pausing.
+		 */
+		zfs_dbgmsg("reflow: error %d writing real location", error);
+		/*
+		 * Update the uberblock that is written when this txg completes.
+		 */
+		RAIDZ_REFLOW_SET(&spa->spa_uberblock, RRSS_SCRATCH_VALID,
+		    logical_size);
+		goto io_error_exit;
+	}
 	pio = zio_root(spa, NULL, NULL, 0);
 	zio_flush(pio, raidvd);
 	zio_wait(pio);
 
 	zfs_dbgmsg("reflow: overwrote %llu bytes (logical) to real location",
 	    (long long)logical_size);
-
 	for (int i = 0; i < raidvd->vdev_children; i++)
 		abd_free(abds[i]);
 	kmem_free(abds, raidvd->vdev_children * sizeof (abd_t *));
@@ -3964,8 +4018,8 @@ raidz_reflow_scratch_sync(void *arg, dmu_tx_t *tx)
 	 * reflow_offset_synced).  If we crashed and re-copied from the
 	 * scratch space, we would lose the regular writes.
 	 */
-	RAIDZ_REFLOW_SET(&spa->spa_ubsync,
-	    RRSS_SCRATCH_INVALID_SYNCED, logical_size);
+	RAIDZ_REFLOW_SET(&spa->spa_ubsync, RRSS_SCRATCH_INVALID_SYNCED,
+	    logical_size);
 	spa->spa_ubsync.ub_timestamp++;
 	ASSERT0(vdev_uberblock_sync_list(&spa->spa_root_vdev, 1,
 	    &spa->spa_ubsync, ZIO_FLAG_CONFIG_WRITER));
@@ -3990,6 +4044,10 @@ raidz_reflow_scratch_sync(void *arg, dmu_tx_t *tx)
 	int txgoff = dmu_tx_get_txg(tx) & TXG_MASK;
 	vre->vre_offset_pertxg[txgoff] = vre->vre_offset;
 	vre->vre_bytes_copied_pertxg[txgoff] = vre->vre_bytes_copied;
+	/*
+	 * Note - raidz_reflow_sync() will update the uberblock state to
+	 * RRSS_SCRATCH_INVALID_SYNCED_REFLOW
+	 */
 	raidz_reflow_sync(spa, tx);
 
 	raidz_expand_pause(7);
@@ -3997,8 +4055,7 @@ raidz_reflow_scratch_sync(void *arg, dmu_tx_t *tx)
 
 /*
  * We crashed in the middle of raidz_reflow_scratch_sync(); complete its work
- * here.  No other i/o can be in progress, so we don't need the
- * vre_rangelock.
+ * here.  No other i/o can be in progress, so we don't need the vre_rangelock.
  */
 void
 vdev_raidz_reflow_copy_scratch(spa_t *spa)
@@ -4086,6 +4143,9 @@ vdev_raidz_reflow_copy_scratch(spa_t *spa)
 	vre->vre_offset = logical_size;
 	vre->vre_offset_pertxg[txgoff] = vre->vre_offset;
 	vre->vre_bytes_copied_pertxg[txgoff] = vre->vre_bytes_copied;
+	/*
+	 * Note that raidz_reflow_sync() will update the uberblock once more
+	 */
 	raidz_reflow_sync(spa, tx);
 
 	dmu_tx_commit(tx);
@@ -4105,21 +4165,33 @@ spa_raidz_expand_cb_check(void *arg, zthr_t *zthr)
 	    !spa->spa_raidz_expand->vre_waiting_for_resilver);
 }
 
-/* RAIDZ expansion background thread */
+/*
+ * RAIDZ expansion background thread
+ *
+ * Can be called multiple times if the reflow is paused
+ */
 static void
 spa_raidz_expand_cb(void *arg, zthr_t *zthr)
 {
 	spa_t *spa = arg;
 	vdev_raidz_expand_t *vre = spa->spa_raidz_expand;
 
-	ASSERT(vre->vre_offset == UINT64_MAX ||
-	    vre->vre_offset == RRSS_GET_OFFSET(&spa->spa_ubsync));
-	vre->vre_offset = RRSS_GET_OFFSET(&spa->spa_ubsync);
+	if (RRSS_GET_STATE(&spa->spa_ubsync) == RRSS_SCRATCH_VALID)
+		vre->vre_offset = 0;
+	else
+		vre->vre_offset = RRSS_GET_OFFSET(&spa->spa_ubsync);
 
+	/* Reflow the begining portion using the scratch area */
 	if (vre->vre_offset == 0) {
 		VERIFY0(dsl_sync_task(spa_name(spa),
 		    NULL, raidz_reflow_scratch_sync,
 		    vre, 0, ZFS_SPACE_CHECK_NONE));
+
+		/* if we encountered errors then pause */
+		if (vre->vre_offset == 0) {
+			vre->vre_waiting_for_resilver = B_TRUE;
+			return;
+		}
 	}
 
 	spa_config_enter(spa, SCL_CONFIG, FTAG, RW_READER);
