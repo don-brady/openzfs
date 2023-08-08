@@ -428,8 +428,8 @@ active.
 Max amount of memory to use for RAID-Z expansion I/O.
 This limits how much I/O can be outstanding at once.
 .
-.It Sy raidz_expand_max_offset_pause Ns = Ns Sy 0 Pq ulong
-For testing, pause RAID-Z expansion at this offset.
+.It Sy raidz_expand_max_reflow_bytes Ns = Ns Sy 0 Pq ulong
+For testing, pause RAID-Z expansion when reflow amount reaches this value.
 .
 .It Sy raidz_io_aggregate_rows Ns = Ns Sy 4 Pq ulong
 For expanded RAID-Z, aggregate reads that have more rows than this.

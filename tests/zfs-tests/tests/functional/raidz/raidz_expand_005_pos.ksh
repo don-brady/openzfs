@@ -35,15 +35,15 @@
 #	2. For each parity value [1..3]
 #	    - create raidz pool with minimum block device files required
 #	    - create couple of datasets with different recordsize and fill it
-#	    - set raidz expand offset pause
+#	    - set raidz expand maximum reflow bytes
 #	    - attach new device to the pool
-#	    - wait reflow offset become equal to raidz expand pause offset
+#	    - wait for reflow bytes to reach the maximum
 #	    - offline and zero vdevs allowed by parity
 #	    - wait some time and start offlined vdevs replacement
 #	    - wait replacement completion and verify pool status
-#	    - loop thru vdevs replacing and raidz expand pause offset increasing
+#	    - loop thru vdevs replacing with the max reflow bytes increasing
 #	    - verify pool
-#	    - set raidz expand offset to max value to complete raidz expansion
+#	    - set reflow bytes to max value to complete the expansion
 
 typeset -r devs=10
 typeset -r dev_size_mb=128
@@ -61,7 +61,7 @@ function cleanup
 	done
 
 	log_must set_tunable32 PREFETCH_DISABLE $embedded_slog_min_ms
-	log_must set_tunable64 RAIDZ_EXPAND_MAX_OFFSET_PAUSE 0
+	log_must set_tunable64 RAIDZ_EXPAND_MAX_REFLOW_BYTES 0
 }
 
 function wait_expand_paused
@@ -139,10 +139,10 @@ for nparity in 1 2 3; do
 	log_must fill_fs /$pool/fs2 1 128 100 1024 R
 
 	for disk in ${disks[$(($nparity+2))..$devs]}; do
-		# Set pause to some random offset near halfway point
+		# Set pause to some random value near halfway point
 		pool_size=$(get_pool_prop size $pool)
 		pause=$((((RANDOM << 15) + RANDOM) % pool_size / 2))
-		log_must set_tunable64 RAIDZ_EXPAND_MAX_OFFSET_PAUSE $pause
+		log_must set_tunable64 RAIDZ_EXPAND_MAX_REFLOW_BYTES $pause
 
 		log_must zpool attach $pool ${raid}-0 $disk
 		devices="$devices $disk"
@@ -155,14 +155,14 @@ for nparity in 1 2 3; do
 			# Increase pause by about 25%
 			pause=$((pause + (((RANDOM << 15) + RANDOM) % \
 			    pool_size) / 4))
-			log_must set_tunable64 RAIDZ_EXPAND_MAX_OFFSET_PAUSE $pause
+			log_must set_tunable64 RAIDZ_EXPAND_MAX_REFLOW_BYTES $pause
 
 			wait_expand_paused
 		done
 
-		# Set pause past largest possible offset for this pool
+		# Set pause past largest possible value for this pool
 		pause=$((devs*dev_size_mb*1024*1024))
-		log_must set_tunable64 RAIDZ_EXPAND_MAX_OFFSET_PAUSE $pause
+		log_must set_tunable64 RAIDZ_EXPAND_MAX_REFLOW_BYTES $pause
 
 		log_must zpool wait -t raidz_expand $pool
 	done

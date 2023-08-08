@@ -36,13 +36,13 @@
 #	2. For each parity value [1..3]
 #	    - create raidz pool with minimum block device files required
 #	    - create couple of datasets with different recordsize and fill it
-#	    - set raidz expand offset pause
+#	    - set raidz expand maximum reflow bytes
 #	    - start randwritecomp on one of the datasets files
 #	    - attach new device to the pool
-#	    - wait until reflow offset is equal to raidz expand pause offset
+#	    - wait for reflow bytes to reach the maximum
 #	    - kill randwritecomp
 #	    - verify pool
-#	    - set raidz expand offset to max value to complete raidz expansion
+#	    - set reflow bytes to max value to complete the expansion
 
 typeset -r devs=10
 typeset -r dev_size_mb=128
@@ -60,7 +60,7 @@ function cleanup
 	done
 
 	log_must set_tunable32 EMBEDDED_SLOG_MIN_MS $embedded_slog_min_ms
-	log_must set_tunable64 RAIDZ_EXPAND_MAX_OFFSET_PAUSE 0
+	log_must set_tunable64 RAIDZ_EXPAND_MAX_REFLOW_BYTES 0
 }
 
 function wait_expand_paused
@@ -105,7 +105,7 @@ for nparity in 1 2 3; do
 		pool_size=$(get_pool_prop size $pool)
 		# Pause at random location near the end of vdev
 		pause=$((((RANDOM << 15) + RANDOM) % pool_size))
-		log_must set_tunable64 RAIDZ_EXPAND_MAX_OFFSET_PAUSE $pause
+		log_must set_tunable64 RAIDZ_EXPAND_MAX_REFLOW_BYTES $pause
 
 		log_bkgrnd randwritecomp /$pool/fs/file
 		pid0=$!
@@ -125,9 +125,9 @@ for nparity in 1 2 3; do
 		log_must check_pool_status $pool "scan" "with 0 errors"
 		log_must check_pool_status $pool "scan" "repaired 0B"
 
-		# Set pause past largest possible offset for this pool
+		# Set pause past largest possible value for this pool
 		pause=$((devs*dev_size_mb*1024*1024))
-		log_must set_tunable64 RAIDZ_EXPAND_MAX_OFFSET_PAUSE $pause
+		log_must set_tunable64 RAIDZ_EXPAND_MAX_REFLOW_BYTES $pause
 
 		log_must zpool wait -t raidz_expand $pool
 	done
