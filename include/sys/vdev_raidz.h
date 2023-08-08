@@ -159,10 +159,18 @@ extern void spa_start_raidz_expansion_thread(spa_t *);
 extern int spa_raidz_expand_get_stats(spa_t *, pool_raidz_expand_stat_t *);
 extern int vdev_raidz_load(vdev_t *);
 
-/* Some of raidz scratch area states */
+/* RAIDZ scratch area pause points (for testing) */
 #define	RAIDZ_EXPAND_PAUSE_NONE	0
+#define	RAIDZ_EXPAND_PAUSE_PRE_SCRATCH_1 1
+#define	RAIDZ_EXPAND_PAUSE_PRE_SCRATCH_2 2
+#define	RAIDZ_EXPAND_PAUSE_PRE_SCRATCH_3 3
 #define	RAIDZ_EXPAND_PAUSE_SCRATCH_VALID 4
 #define	RAIDZ_EXPAND_PAUSE_SCRATCH_REFLOWED 5
+#define	RAIDZ_EXPAND_PAUSE_SCRATCH_POST_REFLOW_1 6
+#define	RAIDZ_EXPAND_PAUSE_SCRATCH_POST_REFLOW_2 7
+#define	RAIDZ_EXPAND_PAUSE_SCRATCH_CRASH_COPY_1 8
+#define	RAIDZ_EXPAND_PAUSE_SCRATCH_CRASH_COPY_2 9
+#define	RAIDZ_EXPAND_PAUSE_SCRATCH_CRASH_COPY_3 10
 #define	RAIDZ_EXPAND_PAUSE_SCRATCH_NOT_IN_USE 11
 
 #ifdef	__cplusplus
