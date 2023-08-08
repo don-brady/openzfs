@@ -142,13 +142,18 @@
 }
 
 /*
- * For testing only: logical offset at which to pause the raidz expansion.
+ * For testing only: pause the raidz expansion after reflowing this amount.
  * (accessed by ZTS and ztest)
  */
 #ifdef	_KERNEL
 static
 #endif	/* _KERNEL */
-unsigned long raidz_expand_max_offset_pause = 0;
+unsigned long raidz_expand_max_reflow_bytes = 0;
+
+/*
+ * For testing only: pause the raidz expansion at a certain point.
+ */
+uint_t raidz_expand_pause_point = 0;
 
 /*
  * Maximum amount of copy io's outstanding at once.
@@ -3771,13 +3776,13 @@ raidz_reflow_impl(vdev_t *vd, vdev_raidz_expand_t *vre, range_tree_t *rt,
 }
 
 /*
- * For testing.
+ * For testing (ztest specific)
  */
 static void
-raidz_expand_pause(uint64_t progress)
+raidz_expand_pause(uint_t pause_point)
 {
-	while (raidz_expand_max_offset_pause != 0 &&
-	    raidz_expand_max_offset_pause <= progress)
+	while (raidz_expand_pause_point != 0 &&
+	    raidz_expand_pause_point <= pause_point)
 		delay(hz);
 }
 
@@ -3834,7 +3839,7 @@ raidz_reflow_scratch_sync(void *arg, dmu_tx_t *tx)
 		abds[i] = abd_alloc_linear(read_size, B_FALSE);
 	}
 
-	raidz_expand_pause(1);
+	raidz_expand_pause(RAIDZ_EXPAND_PAUSE_PRE_SCRATCH_1);
 
 	/*
 	 * If we have already written the scratch area then we must read from
@@ -3893,10 +3898,11 @@ io_error_exit:
 		return;
 	}
 
+	raidz_expand_pause(RAIDZ_EXPAND_PAUSE_PRE_SCRATCH_2);
+
 	/*
 	 * Reflow in memory.
 	 */
-	raidz_expand_pause(2);
 	uint64_t logical_sectors = logical_size >> ashift;
 	for (int i = raidvd->vdev_children - 1; i < logical_sectors; i++) {
 		int oldchild = i % (raidvd->vdev_children - 1);
@@ -3946,7 +3952,8 @@ io_error_exit:
 
 	zfs_dbgmsg("reflow: wrote %llu bytes (logical) to scratch area",
 	    (long long)logical_size);
-	raidz_expand_pause(3);
+
+	raidz_expand_pause(RAIDZ_EXPAND_PAUSE_PRE_SCRATCH_3);
 
 	/*
 	 * Update uberblock to indicate that scratch space is valid.  This is
@@ -4032,7 +4039,7 @@ overwrite:
 	    (long long)logical_size,
 	    (long long)spa->spa_ubsync.ub_timestamp);
 
-	raidz_expand_pause(6);
+	raidz_expand_pause(RAIDZ_EXPAND_PAUSE_SCRATCH_POST_REFLOW_1);
 
 	/*
 	 * Update progress.
@@ -4050,7 +4057,7 @@ overwrite:
 	 */
 	raidz_reflow_sync(spa, tx);
 
-	raidz_expand_pause(7);
+	raidz_expand_pause(RAIDZ_EXPAND_PAUSE_SCRATCH_POST_REFLOW_2);
 }
 
 /*
@@ -4080,7 +4087,7 @@ vdev_raidz_reflow_copy_scratch(spa_t *spa)
 		abds[i] = abd_alloc_linear(write_size, B_FALSE);
 	}
 
-	raidz_expand_pause(8);
+	raidz_expand_pause(RAIDZ_EXPAND_PAUSE_SCRATCH_CRASH_COPY_1);
 	pio = zio_root(spa, NULL, NULL, 0);
 	for (int i = 0; i < raidvd->vdev_children; i++) {
 		/*
@@ -4095,7 +4102,7 @@ vdev_raidz_reflow_copy_scratch(spa_t *spa)
 		    raidz_scratch_child_done, pio));
 	}
 	zio_wait(pio);
-	raidz_expand_pause(9);
+	raidz_expand_pause(RAIDZ_EXPAND_PAUSE_SCRATCH_CRASH_COPY_2);
 
 	/*
 	 * Overwrite real location with reflow'ed data.
@@ -4118,7 +4125,7 @@ vdev_raidz_reflow_copy_scratch(spa_t *spa)
 	for (int i = 0; i < raidvd->vdev_children; i++)
 		abd_free(abds[i]);
 	kmem_free(abds, raidvd->vdev_children * sizeof (abd_t *));
-	raidz_expand_pause(10);
+	raidz_expand_pause(RAIDZ_EXPAND_PAUSE_SCRATCH_CRASH_COPY_3);
 
 	/*
 	 * Update uberblock.
@@ -4272,14 +4279,12 @@ spa_raidz_expand_cb(void *arg, zthr_t *zthr)
 
 			/*
 			 * If requested, pause the reflow when the amount
-			 * specified by raidz_expand_max_offset_pause is reached
+			 * specified by raidz_expand_max_reflow_bytes is reached
 			 *
 			 * This pause is only used during testing or debugging.
-			 *
-			 * XXX Rename once we confirm that we want bytes
 			 */
-			while (raidz_expand_max_offset_pause != 0 &&
-			    raidz_expand_max_offset_pause <=
+			while (raidz_expand_max_reflow_bytes != 0 &&
+			    raidz_expand_max_reflow_bytes <=
 			    vre->vre_bytes_copied && !zthr_iscancelled(zthr)) {
 				delay(hz);
 			}
@@ -4775,8 +4780,8 @@ vdev_ops_t vdev_raidz_ops = {
 	.vdev_op_leaf = B_FALSE			/* not a leaf vdev */
 };
 
-ZFS_MODULE_PARAM(zfs_vdev, raidz_, expand_max_offset_pause, ULONG, ZMOD_RW,
-	"For testing, pause RAIDZ expansion at this offset");
+ZFS_MODULE_PARAM(zfs_vdev, raidz_, expand_max_reflow_bytes, ULONG, ZMOD_RW,
+	"For testing, pause RAIDZ expansion after reflowing this many bytes");
 ZFS_MODULE_PARAM(zfs_vdev, raidz_, expand_max_copy_bytes, ULONG, ZMOD_RW,
 	"Max amount of concurrent i/o for RAIDZ expansion");
 ZFS_MODULE_PARAM(zfs_vdev, raidz_, io_aggregate_rows, ULONG, ZMOD_RW,
