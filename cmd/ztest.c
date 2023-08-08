@@ -275,7 +275,8 @@ extern uint_t dmu_object_alloc_chunk_shift;
 extern boolean_t zfs_force_some_double_word_sm_entries;
 extern unsigned long zio_decompress_fail_fraction;
 extern unsigned long zfs_reconstruct_indirect_damage_fraction;
-extern uint64_t raidz_expand_max_offset_pause;
+extern uint64_t raidz_expand_max_reflow_bytes;
+extern uint_t raidz_expand_pause_point;
 
 
 static ztest_shared_opts_t *ztest_shared_opts;
@@ -1226,21 +1227,21 @@ ztest_kill(ztest_shared_t *zs)
 	 * Before we kill ourselves, make sure that the config is updated.
 	 * See comment above spa_write_cachefile().
 	 */
-	if (raidz_expand_max_offset_pause) {
+	if (raidz_expand_pause_point != RAIDZ_EXPAND_PAUSE_NONE) {
 		if (mutex_tryenter(&spa_namespace_lock)) {
 			spa_write_cachefile(ztest_spa, B_FALSE, B_FALSE,
 			    B_FALSE);
 			mutex_exit(&spa_namespace_lock);
 
 			ztest_scratch_state->zs_raidz_scratch_verify_pause =
-			    raidz_expand_max_offset_pause;
+			    raidz_expand_pause_point;
 		} else {
 			/*
 			 * Do not verify scratch object in case if
 			 * spa_namespace_lock cannot be acquired,
 			 * it can cause deadlock in spa_config_update().
 			 */
-			raidz_expand_max_offset_pause = 0;
+			raidz_expand_pause_point = RAIDZ_EXPAND_PAUSE_NONE;
 
 			return;
 		}
@@ -3949,7 +3950,7 @@ raidz_scratch_verify(void)
 	vdev_raidz_expand_t *vre;
 	vdev_t *raidvd;
 
-	ASSERT(raidz_expand_max_offset_pause == 0);
+	ASSERT(raidz_expand_pause_point == RAIDZ_EXPAND_PAUSE_NONE);
 
 	if (ztest_scratch_state->zs_raidz_scratch_verify_pause == 0)
 		return;
@@ -4031,7 +4032,7 @@ ztest_scratch_thread(void *arg)
 
 	/* wait up to 10 seconds */
 	for (int t = 100; t > 0; t -= 1) {
-		if (raidz_expand_max_offset_pause == 0)
+		if (raidz_expand_pause_point == RAIDZ_EXPAND_PAUSE_NONE)
 			thread_exit();
 
 		(void) poll(NULL, 0, 100);
@@ -4113,14 +4114,14 @@ ztest_vdev_raidz_attach(ztest_ds_t *zd, uint64_t id)
 	    0, 0, 1);
 
 	/*
-	 * 50% of the time, set raidz_expand_max_offset_pause to cause
+	 * 50% of the time, set raidz_expand_pause_point to cause
 	 * raidz_reflow_scratch_sync() and vdev_raidz_reflow_copy_scratch()
 	 * to pause at a certain point and then kill the test after 10
 	 * seconds so raidz_scratch_verify() can confirm consistency when
 	 * the pool is imported.
 	 */
 	if (ztest_random(2) == 0 && expected_error == 0) {
-		raidz_expand_max_offset_pause =
+		raidz_expand_pause_point =
 		    ztest_random(RAIDZ_EXPAND_PAUSE_SCRATCH_NOT_IN_USE) + 1;
 		scratch_thread = thread_create(NULL, 0, ztest_scratch_thread,
 		    ztest_shared, 0, NULL, TS_RUN | TS_JOINABLE, defclsyspri);
@@ -4140,13 +4141,13 @@ ztest_vdev_raidz_attach(ztest_ds_t *zd, uint64_t id)
 		    newpath, newsize, error, expected_error);
 	}
 
-	if (raidz_expand_max_offset_pause) {
+	if (raidz_expand_pause_point) {
 		if (error != 0) {
 			/*
 			 * Do not verify scratch object in case of error
 			 * returned by vdev attaching.
 			 */
-			raidz_expand_max_offset_pause = 0;
+			raidz_expand_pause_point = RAIDZ_EXPAND_PAUSE_NONE;
 		}
 
 		VERIFY0(thread_join(scratch_thread));
@@ -7635,8 +7636,10 @@ ztest_thread(void *arg)
 		/*
 		 * See if it's time to force a crash.
 		 */
-		if (now > zs->zs_thread_kill && !raidz_expand_max_offset_pause)
+		if (now > zs->zs_thread_kill &&
+		    raidz_expand_pause_point == RAIDZ_EXPAND_PAUSE_NONE) {
 			ztest_kill(zs);
+		}
 
 		/*
 		 * If we're getting ENOSPC with some regularity, stop.
@@ -8110,7 +8113,7 @@ ztest_raidz_expand_run(ztest_shared_t *zs, spa_t *spa)
 	/* Set our reflow target to 25%, 50% or 75% of allocated size */
 	uint_t multiple = ztest_random(3) + 1;
 	uint64_t reflow_max = (rzvd->vdev_stat.vs_alloc * multiple) / 4;
-	raidz_expand_max_offset_pause = reflow_max;
+	raidz_expand_max_reflow_bytes = reflow_max;
 
 	if (ztest_opts.zo_verbose >= 1) {
 		(void) printf("running raidz expansion test, killing when "
@@ -8194,7 +8197,7 @@ ztest_raidz_expand_run(ztest_shared_t *zs, spa_t *spa)
 	}
 
 	/* Reset the reflow pause before killing */
-	raidz_expand_max_offset_pause = 0;
+	raidz_expand_max_reflow_bytes = 0;
 
 	if (ztest_opts.zo_verbose >= 1) {
 		(void) printf("killing raidz expansion test after reflow "

@@ -62,7 +62,7 @@ function cleanup
 	done
 
 	log_must set_tunable32 PREFETCH_DISABLE $prefetch_disable
-	log_must set_tunable64 RAIDZ_EXPAND_MAX_OFFSET_PAUSE 0
+	log_must set_tunable64 RAIDZ_EXPAND_MAX_REFLOW_BYTES 0
 }
 
 function wait_expand_paused
@@ -144,7 +144,7 @@ function test_scrub # <pool> <parity> <dir>
 
 	randbyte=$(( ((RANDOM<<15) + RANDOM) % \
 		(dev_size_mb * (devs-1) * 1024 * 1024) ))
-	log_must set_tunable64 RAIDZ_EXPAND_MAX_OFFSET_PAUSE $randbyte
+	log_must set_tunable64 RAIDZ_EXPAND_MAX_REFLOW_BYTES $randbyte
 	log_must zpool attach $TESTPOOL ${raid}-0 $dir/dev-$devs
 	wait_expand_paused
 
@@ -175,7 +175,7 @@ function test_scrub # <pool> <parity> <dir>
 	log_must check_pool_status $pool "errors" "No known data errors"
 
 	log_must zpool clear $pool
-	log_must set_tunable64 RAIDZ_EXPAND_MAX_OFFSET_PAUSE 0
+	log_must set_tunable64 RAIDZ_EXPAND_MAX_REFLOW_BYTES 0
 	log_must zpool wait -t raidz_expand $TESTPOOL
 }
 
