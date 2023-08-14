@@ -141,6 +141,181 @@
 	VDEV_RAIDZ_64MUL_2((x), mask); \
 }
 
+
+/*
+ * Big Theory Statement for how a RAIDZ VDEV is expanded
+ *
+ * An existing RAIDZ VDEV can be expanded by attaching a new disk. Expansion
+ * works with all three RAIDZ parity choices, including RAIDZ1, 2, or 3. VDEVs
+ * that have been previously expanded can be expanded again.
+ *
+ * The RAIDZ VDEV must be healthy (must be able to write to all the drives in
+ * the VDEV) when an expansion starts.  And the expansion will pause if any
+ * disk in the VDEV fails, and resume once the VDEV is healthy again. All other
+ * operations on the pool can continue while an expansion is in progress (e.g.
+ * read/write, snapshot, zpool add, etc). Following a reboot or export/import,
+ * the expansion resumes where it left off.
+ *
+ * == Reflowing the Data ==
+ *
+ * The expansion involves reflowing (copying) the data from the current set
+ * of disks to spread it across the new set which now has one more disk. This
+ * reflow operation is similar to reflowing text when the column width of a
+ * text editor window is expanded. The text doesn’t change but the location of
+ * the text changes to accommodate the new width. An example reflow result for
+ * a 4-wide RAIDZ1 to a 5-wide is shown below.
+ *
+ *                            Reflow End State
+ *            Each letter indicates a parity group (logical stripe)
+ *
+ *         Before expansion                         After Expansion
+ *     D1     D2     D3     D4               D1     D2     D3     D4     D5
+ *  +------+------+------+------+         +------+------+------+------+------+
+ *  |      |      |      |      |         |      |      |      |      |      |
+ *  |  A   |  A   |  A   |  A   |         |  A   |  A   |  A   |  A   |  B   |
+ *  |     1|     2|     3|     4|         |     1|     2|     3|     4|     5|
+ *  +------+------+------+------+         +------+------+------+------+------+
+ *  |      |      |      |      |         |      |      |      |      |      |
+ *  |  B   |  B   |  C   |  C   |         |  B   |  C   |  C   |  C   |  C   |
+ *  |     5|     6|     7|     8|         |     6|     7|     8|     9|    10|
+ *  +------+------+------+------+         +------+------+------+------+------+
+ *  |      |      |      |      |         |      |      |      |      |      |
+ *  |  C   |  C   |  D   |  D   |         |  D   |  D   |  E   |  E   |  E   |
+ *  |     9|    10|    11|    12|         |    11|    12|    13|    14|    15|
+ *  +------+------+------+------+         +------+------+------+------+------+
+ *  |      |      |      |      |         |      |      |      |      |      |
+ *  |  E   |  E   |  E   |  E   |   -->   |  E   |  F   |  F   |  G   |  G   |
+ *  |    13|    14|    15|    16|         |    16|    17|    18|p   19|    20|
+ *  +------+------+------+------+         +------+------+------+------+------+
+ *  |      |      |      |      |         |      |      |      |      |      |
+ *  |  F   |  F   |  G   |  G   |         |  G   |  G   |  H   |  H   |  H   |
+ *  |    17|    18|    19|    20|         |    21|    22|    23|    24|    25|
+ *  +------+------+------+------+         +------+------+------+------+------+
+ *  |      |      |      |      |         |      |      |      |      |      |
+ *  |  G   |  G   |  H   |  H   |         |  H   |  I   |  I   |  J   |  J   |
+ *  |    21|    22|    23|    24|         |    26|    27|    28|    29|    30|
+ *  +------+------+------+------+         +------+------+------+------+------+
+ *  |      |      |      |      |         |      |      |      |      |      |
+ *  |  H   |  H   |  I   |  I   |         |  J   |  J   |      |      |  K   |
+ *  |    25|    26|    27|    28|         |    31|    32|    33|    34|    35|
+ *  +------+------+------+------+         +------+------+------+------+------+
+ *
+ * This reflow approach has several advantages. There is no need to read or
+ * modify the block pointers or recompute any block checksums.  The reflow
+ * doesn’t need to know where the parity sectors reside. We can read and write
+ * data sequentially and the copy can occur in a background thread in open
+ * context. The design also allows for fast discovery of what data to copy.
+ *
+ * The VDEV metaslabs are processed, one at a time, to copy the block data to
+ * have it flow across all the disks. The metasab is disabled for allocations
+ * during the copy. As an optimization, we only copy the allocated data which
+ * can be determined by looking at the metaslab range tree. During the copy we
+ * must maintain the redundancy guarantees of the RAIDZ VDEV (e.g. parity count
+ * of disks can fail). This means we cannot overwrite data during the reflow
+ * that would be needed if a disk is lost.
+ *
+ * After the reflow completes, all newly-written blocks will have the new
+ * layout, i.e. they will have the parity to data ratio implied by the new
+ * number of disks in the RAIDZ group.
+ *
+ * Even though the reflow copies all the allocated space, it only rearranges
+ * the existing data + parity. This has a few implications about blocks that
+ * were written before the reflow completes:
+ *
+ *  - Old blocks will still use the same amount of space (i.e. they will have
+ *    the parity to data ratio implied by the old number of disks in the RAIDZ
+ *    group).
+ *  - Reading old blocks will be slightly slower than before the reflow, for
+ *    two reasons. First, we will have to read from all disks in the RAIDZ
+ *    VDEV, rather than being able to skip the children that contain only
+ *    parity of this block (because the parity and data of a single block are
+ *    now spread out across all the disks).  Second, in most cases there will
+ *    be an extra bcopy, needed to rearrange the data back to its original
+ *    layout in memory.
+ *
+ * == Scratch Area ==
+ *
+ * As we copy the block data, we can only progress to the point that writes
+ * will not overlap with blocks whose progress has not yet been recorded on
+ * disk.  Since partially-copied rows are always read from the old location,
+ * we need to stop one row before the sector-wise overlap, to prevent any
+ * row-wise overlap. Initially this would limit us to copying one sector at
+ * a time. The amount we can safely copy is known as the chunk size.
+ *
+ * Ideally we want to copy at least 2 * (new_width)^2 so that we have a
+ * separation of 2*(new_width+1) and a chunk size of new_width+2. With the max
+ * RAIDZ width of 255 and 4K sectors this would be 2MB per disk. In practice
+ * the widths will likely be single digits so we can get a substantial chuck
+ * size using only a few MB of scratch per disk.
+ *
+ * To speed up the initial copy, we use a scratch area that is persisted to
+ * disk which holds a large amount of reflowed state. We can always read the
+ * partially written stripes when a disk fails or the copy is interrupted
+ * (crash) during the initial copying phase and also get past a small chunk
+ * size restriction.  At a minimum, the scratch space must be large enough to
+ * get us to the point that one row does not overlap itself when moved
+ * (i.e new_width^2).  But going larger is even better. We use the 3.5 MiB
+ * reserved "boot" space that resides after the ZFS disk labels as our scratch
+ * space to handle overwriting the initial part of the VDEV.
+ *
+ *	0     256K   512K                    4M
+ *	+------+------+-----------------------+-----------------------------
+ *	| VDEV | VDEV |   Boot Block (3.5M)   |  Allocatable space ...
+ *	|  L0  |  L1  |       Reserved        |     (Metaslabs)
+ *	+------+------+-----------------------+-------------------------------
+ *                        Scratch Area
+ *
+ * == Reflow Progress Updates ==
+ * After the initial scratch-based reflow, the expansion process works
+ * similarly to device removal. We create a new open context thread whichi
+ * reflows the data, and periodically kicks off sync tasks to update logical
+ * state. In this case, state is the committed progress (offset of next data
+ * to copy). We need to persist the completed offset on disk, so that if we
+ * crash we know which format each VDEV offset is in.
+ *
+ * == Time Dependent Geometry ==
+ *
+ * In RAIDZ, blocks are read from disk in a column by column fashion. For a
+ * multi-row block, the second sector is in the first column not in the 2nd
+ * column. This allows us to issue full reads for each column directly into
+ * the request buffer. The block data is thus laid out sequentially in a
+ * column-by-column fashion.
+ *
+ * After a block is reflowed, the sectors that were all in the original column
+ * data can now reside in different columns. When reading from an expanded
+ * VDEV, we need to know the logical stripe width for each block so we can
+ * reconstitute the block’s data after the reads are completed. Likewise,
+ * when we perform the combinatorial reconstruction we need to know the
+ * original width so we can retry combinations from the past layouts.
+ *
+ * Time dependent geometry is what we call having blocks with different layouts
+ * (stripe widths) in the same VDEV. This time-dependent geometry uses the
+ * block’s birth time (+ the time expansion ended) to establish the correct
+ * width for a given block. After an expansion completes, we record the time
+ * for blocks written with a particular width (geometry).
+ *
+ * == On Disk Format Changes ==
+ *
+ * New pool feature flag, 'raidz_expansion' whose reference count is the number
+ * of RAIDZ VDEVs that have been expanded.
+ *
+ * The uberblock has a new ub_raidz_reflow_info field that holds the scratch
+ * space state (i.e. active or not) and the next offset that needs to be
+ * reflowed (progress state).
+ *
+ * The blocks on expanded RAIDZ VDEV can have different logical stripe widths.
+ *
+ * The top-level RAIDZ VDEV has two new entries in the nvlist:
+ * 'raidz_expand_txgs' array: logical stripe widths by txg are recorded here
+ * 'raidz_expanding' boolean: present during reflow and removed after completion
+ *
+ * And finally the VDEVs top zap adds the following entries:
+ *   VDEV_TOP_ZAP_RAIDZ_EXPAND_STATE
+ *   VDEV_TOP_ZAP_RAIDZ_EXPAND_START_TIME
+ *   VDEV_TOP_ZAP_RAIDZ_EXPAND_END_TIME
+ *   VDEV_TOP_ZAP_RAIDZ_EXPAND_BYTES_COPIED
+ */
+
 /*
  * For testing only: pause the raidz expansion after reflowing this amount.
  * (accessed by ZTS and ztest)
