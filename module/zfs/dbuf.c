@@ -3726,7 +3726,7 @@ dbuf_hold_impl(dnode_t *dn, uint8_t level, uint64_t blkid,
 		ASSERT3P(db->db.db_data, ==, db->db_buf->b_data);
 	}
 
-	ASSERT(db->db_buf == NULL || arc_referenced(db->db_buf));
+	ASSERT(db->db_buf == NULL || arc_referenced(db->db_buf)); // <- 3
 
 	/*
 	 * If this buffer is currently syncing out, and we are

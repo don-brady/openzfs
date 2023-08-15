@@ -3268,7 +3268,7 @@ zil_commit_waiter(zilog_t *zilog, zil_commit_waiter_t *zcw)
 		}
 	}
 
-	mutex_exit(&zcw->zcw_lock);
+	mutex_exit(&zcw->zcw_lock); // <- 8
 }
 
 static zil_commit_waiter_t *
