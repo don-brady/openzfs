@@ -3520,8 +3520,8 @@ zpool_vdev_attach(zpool_handle_t *zhp, const char *old_disk,
 		break;
 
 	case EBUSY:
-		zfs_error_aux(hdl, dgettext(TEXT_DOMAIN,
-		"%s is busy"), new_disk);
+		zfs_error_aux(hdl, dgettext(TEXT_DOMAIN, "%s is busy"),
+		    new_disk);
 		(void) zfs_error(hdl, EZFS_BADDEV, errbuf);
 		break;
 
@@ -3561,9 +3561,23 @@ zpool_vdev_attach(zpool_handle_t *zhp, const char *old_disk,
 			    "being replaced"));
 			(void) zfs_error(hdl, EZFS_BADDEV, errbuf);
 			break;
+		} else {
+			(void) zpool_standard_error(hdl, errno, errbuf);
 		}
-		/* fall through */
+		break;
 
+	case EADDRINUSE:
+		/*
+		 * The boot reserved area is already being used (FreeBSD)
+		 */
+		if (strcmp(type, VDEV_TYPE_RAIDZ) == 0) {
+			zfs_error_aux(hdl, dgettext(TEXT_DOMAIN,
+			    "the reserved boot area needed for the expansion "
+			    "is already being used by a boot loader"));
+		} else {
+			(void) zpool_standard_error(hdl, errno, errbuf);
+		}
+		break;
 	default:
 		(void) zpool_standard_error(hdl, errno, errbuf);
 	}
