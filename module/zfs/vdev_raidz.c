@@ -207,7 +207,7 @@
  * context. The design also allows for fast discovery of what data to copy.
  *
  * The VDEV metaslabs are processed, one at a time, to copy the block data to
- * have it flow across all the disks. The metasab is disabled for allocations
+ * have it flow across all the disks. The metaslab is disabled for allocations
  * during the copy. As an optimization, we only copy the allocated data which
  * can be determined by looking at the metaslab range tree. During the copy we
  * must maintain the redundancy guarantees of the RAIDZ VDEV (e.g. parity count
@@ -267,7 +267,7 @@
  *
  * == Reflow Progress Updates ==
  * After the initial scratch-based reflow, the expansion process works
- * similarly to device removal. We create a new open context thread whichi
+ * similarly to device removal. We create a new open context thread which
  * reflows the data, and periodically kicks off sync tasks to update logical
  * state. In this case, state is the committed progress (offset of next data
  * to copy). We need to persist the completed offset on disk, so that if we
