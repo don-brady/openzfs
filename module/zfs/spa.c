@@ -7090,6 +7090,12 @@ spa_vdev_attach(spa_t *spa, uint64_t guid, nvlist_t *nvroot, int replacing,
 				return (spa_vdev_exit(spa, newrootvd, txg,
 				    ENXIO));
 			}
+			/* Also fail if reserved boot area is in-use */
+			if (vdev_check_boot_reserve(spa, oldvd->vdev_child[i])
+			    != 0) {
+				return (spa_vdev_exit(spa, newrootvd, txg,
+				    EADDRINUSE));
+			}
 		}
 	}
 
