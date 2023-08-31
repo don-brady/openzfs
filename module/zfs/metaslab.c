@@ -4651,6 +4651,7 @@ metaslab_block_alloc(metaslab_t *msp, uint64_t size, uint64_t txg)
 	ASSERT(MUTEX_HELD(&msp->ms_lock));
 	VERIFY(!msp->ms_condensing);
 	VERIFY0(msp->ms_disabled);
+	VERIFY0(msp->ms_new);
 
 	start = mc->mc_ops->msop_alloc(msp, size);
 	if (start != -1ULL) {
@@ -4722,10 +4723,10 @@ find_valid_metaslab(metaslab_group_t *mg, uint64_t activation_weight,
 		}
 
 		/*
-		 * If the selected metaslab is condensing or disabled,
-		 * skip it.
+		 * If the selected metaslab is condensing or disabled, or
+		 * hasn't gone through a metaslab_sync_done(), then skip it.
 		 */
-		if (msp->ms_condensing || msp->ms_disabled > 0)
+		if (msp->ms_condensing || msp->ms_disabled > 0 || msp->ms_new)
 			continue;
 
 		*was_active = msp->ms_allocator != -1;

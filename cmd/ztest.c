@@ -3971,6 +3971,7 @@ raidz_scratch_verify(void)
 	spa_config_enter(spa, SCL_ALL, FTAG, RW_READER);
 
 	vre = spa->spa_raidz_expand;
+	ASSERT(vre != NULL);
 	raidvd = vdev_lookup_top(spa, vre->vre_vdev_id);
 	offset = RRSS_GET_OFFSET(&spa->spa_uberblock);
 	state = RRSS_GET_STATE(&spa->spa_uberblock);
@@ -4114,14 +4115,13 @@ ztest_vdev_raidz_attach(ztest_ds_t *zd, uint64_t id)
 
 	/*
 	 * 50% of the time, set raidz_expand_pause_point to cause
-	 * raidz_reflow_scratch_sync() and vdev_raidz_reflow_copy_scratch()
-	 * to pause at a certain point and then kill the test after 10
-	 * seconds so raidz_scratch_verify() can confirm consistency when
-	 * the pool is imported.
+	 * raidz_reflow_scratch_sync() to pause at a certain point and
+	 * then kill the test after 10 seconds so raidz_scratch_verify()
+	 * can confirm consistency when the pool is imported.
 	 */
 	if (ztest_random(2) == 0 && expected_error == 0) {
 		raidz_expand_pause_point =
-		    ztest_random(RAIDZ_EXPAND_PAUSE_SCRATCH_NOT_IN_USE) + 1;
+		    ztest_random(RAIDZ_EXPAND_PAUSE_SCRATCH_POST_REFLOW_2) + 1;
 		scratch_thread = thread_create(NULL, 0, ztest_scratch_thread,
 		    ztest_shared, 0, NULL, TS_RUN | TS_JOINABLE, defclsyspri);
 	}
@@ -4151,7 +4151,6 @@ ztest_vdev_raidz_attach(ztest_ds_t *zd, uint64_t id)
 
 		VERIFY0(thread_join(scratch_thread));
 	}
-
 out:
 	mutex_exit(&ztest_vdev_lock);
 
