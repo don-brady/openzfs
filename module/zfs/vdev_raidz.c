@@ -215,14 +215,14 @@
  * that would be needed if a disk is lost.
  *
  * After the reflow completes, all newly-written blocks will have the new
- * layout, i.e. they will have the parity to data ratio implied by the new
+ * layout, i.e., they will have the parity to data ratio implied by the new
  * number of disks in the RAIDZ group.
  *
  * Even though the reflow copies all the allocated space, it only rearranges
  * the existing data + parity. This has a few implications about blocks that
  * were written before the reflow completes:
  *
- *  - Old blocks will still use the same amount of space (i.e. they will have
+ *  - Old blocks will still use the same amount of space (i.e., they will have
  *    the parity to data ratio implied by the old number of disks in the RAIDZ
  *    group).
  *  - Reading old blocks will be slightly slower than before the reflow, for
@@ -276,7 +276,7 @@
  * == Time Dependent Geometry ==
  *
  * In RAIDZ, blocks are read from disk in a column by column fashion. For a
- * multi-row block, the second sector is in the first column not in the 2nd
+ * multi-row block, the second sector is in the first column not in the second
  * column. This allows us to issue full reads for each column directly into
  * the request buffer. The block data is thus laid out sequentially in a
  * column-by-column fashion.
@@ -300,7 +300,7 @@
  * of RAIDZ VDEVs that have been expanded.
  *
  * The uberblock has a new ub_raidz_reflow_info field that holds the scratch
- * space state (i.e. active or not) and the next offset that needs to be
+ * space state (i.e., active or not) and the next offset that needs to be
  * reflowed (progress state).
  *
  * The blocks on expanded RAIDZ VDEV can have different logical stripe widths.
@@ -1904,6 +1904,7 @@ vdev_raidz_reconstruct_general(raidz_row_t *rr, int *tgts, int ntgts)
 	 * temporary linear ABDs if any non-linear ABDs are found.
 	 */
 	for (i = rr->rr_firstdatacol; i < rr->rr_cols; i++) {
+		ASSERT(rr->rr_col[i].rc_abd != NULL);
 		if (!abd_is_linear(rr->rr_col[i].rc_abd)) {
 			bufs = kmem_alloc(rr->rr_cols * sizeof (abd_t *),
 			    KM_PUSHPAGE);
