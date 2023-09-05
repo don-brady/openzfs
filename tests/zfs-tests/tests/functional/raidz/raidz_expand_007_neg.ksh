@@ -41,6 +41,9 @@
 #	4. Verify that device attached failed
 #	5. Destroy the raidz pool
 
+# FreeBSD:
+# /home/gitlab-runner/zfs/tests/zfs-tests/tests/functional/raidz/raidz_expand_007_neg (run as root) [00:00] [FAIL]
+
 typeset -r devs=4
 typeset -r dev_size_mb=128
 typeset -a disks
