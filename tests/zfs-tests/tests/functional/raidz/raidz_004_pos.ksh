@@ -36,6 +36,8 @@
 #	runtime might be longer.
 #
 
+# FreeBSD:
+# Test: /home/gitlab-runner/zfs/tests/zfs-tests/tests/functional/raidz/raidz_004_pos (run as root) [20:00] [KILLED]
 log_must raidz_test -S -e -r 0 -t 300
 
 log_pass "raidz_test parameter sweep test with expanded map succeeded."
