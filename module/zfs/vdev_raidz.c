@@ -216,11 +216,11 @@
  *
  * After the reflow completes, all newly-written blocks will have the new
  * layout, i.e., they will have the parity to data ratio implied by the new
- * number of disks in the RAIDZ group.
+ * number of disks in the RAIDZ group.  Even though the reflow copies all of
+ * the allocated space (data and parity), it is only rearranged, not changed.
  *
- * Even though the reflow copies all the allocated space, it only rearranges
- * the existing data + parity. This has a few implications about blocks that
- * were written before the reflow completes:
+ * This act of reflowing the data has a few implications about blocks
+ * that were written before the reflow completes:
  *
  *  - Old blocks will still use the same amount of space (i.e., they will have
  *    the parity to data ratio implied by the old number of disks in the RAIDZ
@@ -228,10 +228,9 @@
  *  - Reading old blocks will be slightly slower than before the reflow, for
  *    two reasons. First, we will have to read from all disks in the RAIDZ
  *    VDEV, rather than being able to skip the children that contain only
- *    parity of this block (because the parity and data of a single block are
- *    now spread out across all the disks).  Second, in most cases there will
- *    be an extra bcopy, needed to rearrange the data back to its original
- *    layout in memory.
+ *    parity of this block (because the data of a single block is now spread
+ *    out across all the disks).  Second, in most cases there will be an extra
+ *    bcopy, needed to rearrange the data back to its original layout in memory.
  *
  * == Scratch Area ==
  *
@@ -239,8 +238,13 @@
  * will not overlap with blocks whose progress has not yet been recorded on
  * disk.  Since partially-copied rows are always read from the old location,
  * we need to stop one row before the sector-wise overlap, to prevent any
- * row-wise overlap. Initially this would limit us to copying one sector at
- * a time. The amount we can safely copy is known as the chunk size.
+ * row-wise overlap. For example, in the diagram above, when we reflow sector
+ * B6 it will overwite the original location for B5.
+ *
+ * To get around this, a scratch space is used so that we can start copying
+ * without risking data loss by overlapping the row. As an added benefit, it
+ * improves performance at the beginning of the reflow, but that small perf
+ * boost wouldn't be worth the complexity on its own.
  *
  * Ideally we want to copy at least 2 * (new_width)^2 so that we have a
  * separation of 2*(new_width+1) and a chunk size of new_width+2. With the max
@@ -248,15 +252,14 @@
  * the widths will likely be single digits so we can get a substantial chuck
  * size using only a few MB of scratch per disk.
  *
- * To speed up the initial copy, we use a scratch area that is persisted to
- * disk which holds a large amount of reflowed state. We can always read the
- * partially written stripes when a disk fails or the copy is interrupted
- * (crash) during the initial copying phase and also get past a small chunk
- * size restriction.  At a minimum, the scratch space must be large enough to
- * get us to the point that one row does not overlap itself when moved
- * (i.e new_width^2).  But going larger is even better. We use the 3.5 MiB
- * reserved "boot" space that resides after the ZFS disk labels as our scratch
- * space to handle overwriting the initial part of the VDEV.
+ * The scratch area is persisted to disk which holds a large amount of reflowed
+ * state. We can always read the partially written stripes when a disk fails or
+ * the copy is interrupted (crash) during the initial copying phase and also
+ * get past a small chunk size restriction.  At a minimum, the scratch space
+ * must be large enough to get us to the point that one row does not overlap
+ * itself when moved (i.e new_width^2).  But going larger is even better. We
+ * use the 3.5 MiB reserved "boot" space that resides after the ZFS disk labels
+ * as our scratch space to handle overwriting the initial part of the VDEV.
  *
  *	0     256K   512K                    4M
  *	+------+------+-----------------------+-----------------------------
@@ -275,11 +278,15 @@
  *
  * == Time Dependent Geometry ==
  *
- * In RAIDZ, blocks are read from disk in a column by column fashion. For a
- * multi-row block, the second sector is in the first column not in the second
- * column. This allows us to issue full reads for each column directly into
- * the request buffer. The block data is thus laid out sequentially in a
- * column-by-column fashion.
+ * In non-expanded RAIDZ, blocks are read from disk in a column by column
+ * fashion. For a multi-row block, the second sector is in the first column
+ * not in the second column. This allows us to issue full reads for each
+ * column directly into the request buffer. The block data is thus laid out
+ * sequentially in a column-by-column fashion.
+ *
+ * For example, in the before expansion diagram above, one logical block might
+ * be sectors G19-H26. The parity is in G19,H23; and the data is in
+ * G20,H24,G21,H25,G22,H26.
  *
  * After a block is reflowed, the sectors that were all in the original column
  * data can now reside in different columns. When reading from an expanded
@@ -299,17 +306,31 @@
  * New pool feature flag, 'raidz_expansion' whose reference count is the number
  * of RAIDZ VDEVs that have been expanded.
  *
- * The uberblock has a new ub_raidz_reflow_info field that holds the scratch
- * space state (i.e., active or not) and the next offset that needs to be
- * reflowed (progress state).
- *
  * The blocks on expanded RAIDZ VDEV can have different logical stripe widths.
  *
- * The top-level RAIDZ VDEV has two new entries in the nvlist:
- * 'raidz_expand_txgs' array: logical stripe widths by txg are recorded here
- * 'raidz_expanding' boolean: present during reflow and removed after completion
+ * Since the uberblock can point to arbitrary blocks, which might be on the
+ * expanding RAIDZ, and might or might not have been expanded. We need to know
+ * which way a block is laid out before reading it. This info is the next
+ * offset that needs to be reflowed and we persist that in the uberblock, in
+ * the new ub_raidz_reflow_info field, as opposed to the MOS or the vdev label.
+ * After the expansion is complete, we then use the raidz_expand_txgs array
+ * (see below) to determine how to read a block and the ub_raidz_reflow_info
+ * field no longer required.
  *
- * And finally the VDEVs top zap adds the following entries:
+ * The uberblock's ub_raidz_reflow_info field also holds the scratch space
+ * state (i.e., active or not) which is also required before reading a block
+ * during the initial phase of reflowing the data.
+ *
+ * The top-level RAIDZ VDEV has two new entries in the nvlist:
+ *
+ * 'raidz_expand_txgs' array: logical stripe widths by txg are recorded here
+ *                            and used after the expansion is complete to
+ *                            determine how to read a raidz block
+ * 'raidz_expanding' boolean: present during reflow and removed after completion
+ *                            used during a spa import to resume an unfinished
+ *                            expansion
+ *
+ * And finally the VDEVs top zap adds the following informational entries:
  *   VDEV_TOP_ZAP_RAIDZ_EXPAND_STATE
  *   VDEV_TOP_ZAP_RAIDZ_EXPAND_START_TIME
  *   VDEV_TOP_ZAP_RAIDZ_EXPAND_END_TIME
@@ -546,7 +567,7 @@ vdev_raidz_map_alloc(zio_t *zio, uint64_t ashift, uint64_t dcols,
 	uint64_t f = b % dcols;
 	/* The starting byte offset on each child vdev. */
 	uint64_t o = (b / dcols) << ashift;
-	uint64_t q, r, c, bc, col, acols, scols, coff, devidx, asize, tot;
+	uint64_t acols, scols;
 
 	raidz_map_t *rm =
 	    kmem_zalloc(offsetof(raidz_map_t, rm_row[1]), KM_SLEEP);
@@ -556,22 +577,22 @@ vdev_raidz_map_alloc(zio_t *zio, uint64_t ashift, uint64_t dcols,
 	 * "Quotient": The number of data sectors for this stripe on all but
 	 * the "big column" child vdevs that also contain "remainder" data.
 	 */
-	q = s / (dcols - nparity);
+	uint64_t q = s / (dcols - nparity);
 
 	/*
 	 * "Remainder": The number of partial stripe data sectors in this I/O.
 	 * This will add a sector to some, but not all, child vdevs.
 	 */
-	r = s - q * (dcols - nparity);
+	uint64_t r = s - q * (dcols - nparity);
 
 	/* The number of "big columns" - those which contain remainder data. */
-	bc = (r == 0 ? 0 : r + nparity);
+	uint64_t bc = (r == 0 ? 0 : r + nparity);
 
 	/*
 	 * The total number of data and parity sectors associated with
 	 * this I/O.
 	 */
-	tot = s + nparity * (q + (r == 0 ? 0 : 1));
+	uint64_t tot = s + nparity * (q + (r == 0 ? 0 : 1));
 
 	/*
 	 * acols: The columns that will be accessed.
@@ -597,12 +618,12 @@ vdev_raidz_map_alloc(zio_t *zio, uint64_t ashift, uint64_t dcols,
 	rr->rr_size = zio->io_size;
 #endif
 
-	asize = 0;
+	uint64_t asize = 0;
 
-	for (c = 0; c < scols; c++) {
+	for (uint64_t c = 0; c < scols; c++) {
 		raidz_col_t *rc = &rr->rr_col[c];
-		col = f + c;
-		coff = o;
+		uint64_t col = f + c;
+		uint64_t coff = o;
 		if (col >= dcols) {
 			col -= dcols;
 			coff += 1ULL << ashift;
@@ -646,7 +667,7 @@ vdev_raidz_map_alloc(zio_t *zio, uint64_t ashift, uint64_t dcols,
 	ASSERT(rr->rr_col[0].rc_size == rr->rr_col[1].rc_size);
 
 	if (rr->rr_firstdatacol == 1 && (zio->io_offset & (1ULL << 20))) {
-		devidx = rr->rr_col[0].rc_devidx;
+		uint64_t devidx = rr->rr_col[0].rc_devidx;
 		o = rr->rr_col[0].rc_offset;
 		rr->rr_col[0].rc_devidx = rr->rr_col[1].rc_devidx;
 		rr->rr_col[0].rc_offset = rr->rr_col[1].rc_offset;
@@ -878,26 +899,7 @@ vdev_raidz_map_alloc_expanded(zio_t *zio,
 		}
 
 		/*
-		 * If all data stored spans all columns, there's a danger that
-		 * parity will always be on the same device and, since parity
-		 * isn't read during normal operation, that that device's I/O
-		 * bandwidth won't be used effectively. We therefore switch the
-		 * parity every 1MB.
-		 *
-		 * ... at least that was, ostensibly, the theory. As a
-		 * practical matter unless we juggle the parity between all
-		 * devices evenly, we won't see any benefit. Further,
-		 * occasional writes that aren't a multiple of the LCM of the
-		 * number of children and the minimum stripe width are
-		 * sufficient to avoid pessimal behavior.
-		 * Unfortunately, this decision created an implicit on-disk
-		 * format requirement that we need to support for all eternity,
-		 * but only for single-parity RAID-Z.
-		 *
-		 * If we intend to skip a sector in the zeroth column for
-		 * padding we must make sure to note this swap. We will never
-		 * intend to skip the first column since at least one data and
-		 * one parity column must appear in each row.
+		 * See comment in vdev_raidz_map_alloc()
 		 */
 		if (rr->rr_firstdatacol == 1 && rr->rr_cols > 1 &&
 		    (offset & (1ULL << 20))) {
@@ -1038,11 +1040,11 @@ vdev_raidz_p_func(void *buf, size_t size, void *private)
 {
 	struct pqr_struct *pqr = private;
 	const uint64_t *src = buf;
-	int i, cnt = size / sizeof (src[0]);
+	int cnt = size / sizeof (src[0]);
 
 	ASSERT(pqr->p && !pqr->q && !pqr->r);
 
-	for (i = 0; i < cnt; i++, src++, pqr->p++)
+	for (int i = 0; i < cnt; i++, src++, pqr->p++)
 		*pqr->p ^= *src;
 
 	return (0);
@@ -1054,11 +1056,11 @@ vdev_raidz_pq_func(void *buf, size_t size, void *private)
 	struct pqr_struct *pqr = private;
 	const uint64_t *src = buf;
 	uint64_t mask;
-	int i, cnt = size / sizeof (src[0]);
+	int cnt = size / sizeof (src[0]);
 
 	ASSERT(pqr->p && pqr->q && !pqr->r);
 
-	for (i = 0; i < cnt; i++, src++, pqr->p++, pqr->q++) {
+	for (int i = 0; i < cnt; i++, src++, pqr->p++, pqr->q++) {
 		*pqr->p ^= *src;
 		VDEV_RAIDZ_64MUL_2(*pqr->q, mask);
 		*pqr->q ^= *src;
@@ -1073,11 +1075,11 @@ vdev_raidz_pqr_func(void *buf, size_t size, void *private)
 	struct pqr_struct *pqr = private;
 	const uint64_t *src = buf;
 	uint64_t mask;
-	int i, cnt = size / sizeof (src[0]);
+	int cnt = size / sizeof (src[0]);
 
 	ASSERT(pqr->p && pqr->q && pqr->r);
 
-	for (i = 0; i < cnt; i++, src++, pqr->p++, pqr->q++, pqr->r++) {
+	for (int i = 0; i < cnt; i++, src++, pqr->p++, pqr->q++, pqr->r++) {
 		*pqr->p ^= *src;
 		VDEV_RAIDZ_64MUL_2(*pqr->q, mask);
 		*pqr->q ^= *src;
@@ -1363,8 +1365,8 @@ vdev_raidz_reconstruct_p(raidz_row_t *rr, int *tgts, int ntgts)
 	int x = tgts[0];
 	abd_t *dst, *src;
 
-	zfs_dbgmsg("reconstruct_p(rm=%px x=%u)",
-	    rr, x);
+	if (zfs_flags & ZFS_DEBUG_RAIDZ_RECONSTRUCT)
+		zfs_dbgmsg("reconstruct_p(rm=%px x=%u)", rr, x);
 
 	ASSERT3U(ntgts, ==, 1);
 	ASSERT3U(x, >=, rr->rr_firstdatacol);
@@ -2890,10 +2892,12 @@ raidz_reconstruct(zio_t *zio, int *ltgts, int ntgts, int nparity)
 	int physical_width = zio->io_vd->vdev_children;
 	int original_width = (rm->rm_original_width != 0) ?
 	    rm->rm_original_width : physical_width;
+	int dbgmsg = zfs_flags & ZFS_DEBUG_RAIDZ_RECONSTRUCT;
 
-	zfs_dbgmsg(
-	    "raidz_reconstruct_expanded(zio=%px ltgts=%u,%u,%u ntgts=%u",
-	    zio, ltgts[0], ltgts[1], ltgts[2], ntgts);
+	if (dbgmsg) {
+		zfs_dbgmsg("raidz_reconstruct_expanded(zio=%px ltgts=%u,%u,%u "
+		    "ntgts=%u", zio, ltgts[0], ltgts[1], ltgts[2], ntgts);
+	}
 
 	/* Reconstruct each row */
 	for (int r = 0; r < rm->rm_nrows; r++) {
@@ -2903,8 +2907,8 @@ raidz_reconstruct(zio_t *zio, int *ltgts, int ntgts, int nparity)
 		int dead = 0;
 		int dead_data = 0;
 
-		zfs_dbgmsg("raidz_reconstruct_expanded(row=%u)",
-		    r);
+		if (dbgmsg)
+			zfs_dbgmsg("raidz_reconstruct_expanded(row=%u)", r);
 
 		for (int c = 0; c < rr->rr_cols; c++) {
 			raidz_col_t *rc = &rr->rr_col[c];
@@ -2949,9 +2953,12 @@ raidz_reconstruct(zio_t *zio, int *ltgts, int ntgts, int nparity)
 					 */
 					if (t < VDEV_RAIDZ_MAXPARITY) {
 						my_tgts[t++] = c;
-						zfs_dbgmsg("simulating failure "
-						    "of col %u devidx %u",
-						    c, (int)rc->rc_devidx);
+						if (dbgmsg) {
+							zfs_dbgmsg("simulating "
+							    "failure of col %u "
+							    "devidx %u", c,
+							    (int)rc->rc_devidx);
+						}
 					}
 					break;
 				}
@@ -2959,8 +2966,10 @@ raidz_reconstruct(zio_t *zio, int *ltgts, int ntgts, int nparity)
 		}
 		if (dead > nparity) {
 			/* reconstruction not possible */
-			zfs_dbgmsg("reconstruction not possible; "
-			    "too many failures");
+			if (dbgmsg) {
+				zfs_dbgmsg("reconstruction not possible; "
+				    "too many failures");
+			}
 			raidz_restore_orig_data(rm);
 			return (EINVAL);
 		}
@@ -3004,14 +3013,19 @@ raidz_reconstruct(zio_t *zio, int *ltgts, int ntgts, int nparity)
 
 		zio_checksum_verified(zio);
 
-		zfs_dbgmsg("reconstruction successful (checksum verified)");
+		if (dbgmsg) {
+			zfs_dbgmsg("reconstruction successful "
+			    "(checksum verified)");
+		}
 		return (0);
 	}
 
 	/* Reconstruction failed - restore original data */
 	raidz_restore_orig_data(rm);
-	zfs_dbgmsg("raidz_reconstruct_expanded(zio=%px) checksum failed",
-	    zio);
+	if (dbgmsg) {
+		zfs_dbgmsg("raidz_reconstruct_expanded(zio=%px) checksum "
+		    "failed", zio);
+	}
 	return (ECKSUM);
 }
 
@@ -3130,10 +3144,14 @@ vdev_raidz_combrec(zio_t *zio)
 				if (ltgts[t] == n) {
 					/* try more failures */
 					ASSERT3U(t, ==, num_failures - 1);
-					zfs_dbgmsg("reconstruction failed "
-					    "for num_failures=%u; tried all "
-					    "combinations",
-					    num_failures);
+					if (zfs_flags &
+					    ZFS_DEBUG_RAIDZ_RECONSTRUCT) {
+						zfs_dbgmsg("reconstruction "
+						    "failed for num_failures="
+						    "%u; tried all "
+						    "combinations",
+						    num_failures);
+					}
 					break;
 				}
 
@@ -3160,7 +3178,8 @@ vdev_raidz_combrec(zio_t *zio)
 				break;
 		}
 	}
-	zfs_dbgmsg("reconstruction failed for all num_failures");
+	if (zfs_flags & ZFS_DEBUG_RAIDZ_RECONSTRUCT)
+		zfs_dbgmsg("reconstruction failed for all num_failures");
 	return (ECKSUM);
 }
 
@@ -4263,7 +4282,6 @@ vdev_raidz_reflow_copy_scratch(spa_t *spa)
 		abds[i] = abd_alloc_linear(write_size, B_FALSE);
 	}
 
-	raidz_expand_pause(RAIDZ_EXPAND_PAUSE_SCRATCH_CRASH_COPY_1);
 	pio = zio_root(spa, NULL, NULL, 0);
 	for (int i = 0; i < raidvd->vdev_children; i++) {
 		/*
@@ -4278,7 +4296,6 @@ vdev_raidz_reflow_copy_scratch(spa_t *spa)
 		    raidz_scratch_child_done, pio));
 	}
 	zio_wait(pio);
-	raidz_expand_pause(RAIDZ_EXPAND_PAUSE_SCRATCH_CRASH_COPY_2);
 
 	/*
 	 * Overwrite real location with reflow'ed data.
@@ -4301,7 +4318,6 @@ vdev_raidz_reflow_copy_scratch(spa_t *spa)
 	for (int i = 0; i < raidvd->vdev_children; i++)
 		abd_free(abds[i]);
 	kmem_free(abds, raidvd->vdev_children * sizeof (abd_t *));
-	raidz_expand_pause(RAIDZ_EXPAND_PAUSE_SCRATCH_CRASH_COPY_3);
 
 	/*
 	 * Update uberblock.
@@ -4334,8 +4350,6 @@ vdev_raidz_reflow_copy_scratch(spa_t *spa)
 	dmu_tx_commit(tx);
 
 	spa_config_exit(spa, SCL_STATE, FTAG);
-
-	raidz_expand_pause(RAIDZ_EXPAND_PAUSE_SCRATCH_NOT_IN_USE);
 }
 
 static boolean_t
