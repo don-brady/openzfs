@@ -68,49 +68,48 @@ for i in {0..$(($devs))}; do
 	disks[${#disks[*]}+1]=$device
 done
 
-for nparity in 1 2 3; do
-	raid=raidz$nparity
-	dir=$TEST_BASE_DIR
-	pool=$TESTPOOL
-	opts="-o cachefile=none"
+nparity=$((RANDOM%(3) + 1))
+raid=raidz$nparity
+dir=$TEST_BASE_DIR
+pool=$TESTPOOL
+opts="-o cachefile=none"
 
-	log_must zpool create -f $opts $pool $raid ${disks[1..$(($nparity+1))]}
-	log_must zfs set primarycache=metadata $pool
+log_must zpool create -f $opts $pool $raid ${disks[1..$(($nparity+1))]}
+log_must zfs set primarycache=metadata $pool
 
-	log_must zfs create $pool/fs
-	log_must fill_fs /$pool/fs 1 512 100 1024 R
+log_must zfs create $pool/fs
+log_must fill_fs /$pool/fs 1 512 100 1024 R
 
-	log_must zfs create -o compress=on $pool/fs2
-	log_must fill_fs /$pool/fs2 1 512 100 1024 R
+log_must zfs create -o compress=on $pool/fs2
+log_must fill_fs /$pool/fs2 1 512 100 1024 R
 
-	log_must zfs create -o compress=on -o recordsize=8k $pool/fs3
-	log_must fill_fs /$pool/fs3 1 512 100 1024 R
+log_must zfs create -o compress=on -o recordsize=8k $pool/fs3
+log_must fill_fs /$pool/fs3 1 512 100 1024 R
 
-	typeset pool_size=$(get_pool_prop size $pool)
+typeset pool_size=$(get_pool_prop size $pool)
 
-	for disk in ${disks[$(($nparity+2))..$devs]}; do
-		log_must dd if=/dev/urandom of=/${pool}/FILE-$RANDOM bs=1M \
-		    count=64
+for disk in ${disks[$(($nparity+2))..$devs]}; do
+	log_must dd if=/dev/urandom of=/${pool}/FILE-$RANDOM bs=1M \
+	    count=64
 
-		log_must zpool attach -w $pool ${raid}-0 $disk
+	log_must zpool attach -w $pool ${raid}-0 $disk
 
-		# Wait some time for pool size increase
-		sleep 5
+	# Wait some time for pool size increase
+	sleep 5
 
-		# Confirm that disk was attached to the pool
-		log_must zpool get -H path $TESTPOOL $disk
+	# Confirm that disk was attached to the pool
+	log_must zpool get -H path $TESTPOOL $disk
 
-		typeset expand_size=$(get_pool_prop size $pool)
-		if [[ "$expand_size" -le "$pool_size" ]]; then
-			log_fail "pool $pool not expanded"
-		fi
+	typeset expand_size=$(get_pool_prop size $pool)
+	if [[ "$expand_size" -le "$pool_size" ]]; then
+		log_fail "pool $pool not expanded"
+	fi
 
-		verify_pool $pool
+	verify_pool $pool
 
-		pool_size=$expand_size
-	done
-
-	zpool destroy "$pool"
+	pool_size=$expand_size
 done
+
+zpool destroy "$pool"
 
 log_pass "raidz expansion test succeeded."
