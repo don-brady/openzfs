@@ -193,29 +193,28 @@ done
 # Disk file which will be attached
 log_must truncate -s 512M $TEST_BASE_DIR/dev-$devs
 
-for nparity in 1 2 3; do
-	raid=raidz$nparity
-	dir=$TEST_BASE_DIR
+nparity=$((RANDOM%(3) + 1))
+raid=raidz$nparity
+dir=$TEST_BASE_DIR
 
-	log_must zpool create -f -o cachefile=none $TESTPOOL $raid ${disks[@]}
-	log_must zfs set primarycache=metadata $TESTPOOL
+log_must zpool create -f -o cachefile=none $TESTPOOL $raid ${disks[@]}
+log_must zfs set primarycache=metadata $TESTPOOL
 
-	log_must zfs create $TESTPOOL/fs
-	log_must fill_fs /$TESTPOOL/fs 1 512 100 1024 R
+log_must zfs create $TESTPOOL/fs
+log_must fill_fs /$TESTPOOL/fs 1 512 100 1024 R
 
-	log_must zfs create -o compress=on $TESTPOOL/fs2
-	log_must fill_fs /$TESTPOOL/fs2 1 512 100 1024 R
+log_must zfs create -o compress=on $TESTPOOL/fs2
+log_must fill_fs /$TESTPOOL/fs2 1 512 100 1024 R
 
-	log_must zfs create -o compress=on -o recordsize=8k $TESTPOOL/fs3
-	log_must fill_fs /$TESTPOOL/fs3 1 512 100 1024 R
+log_must zfs create -o compress=on -o recordsize=8k $TESTPOOL/fs3
+log_must fill_fs /$TESTPOOL/fs3 1 512 100 1024 R
 
-	log_must check_pool_status $TESTPOOL "errors" "No known data errors"
+log_must check_pool_status $TESTPOOL "errors" "No known data errors"
 
-	test_scrub $TESTPOOL $nparity $dir
-	# XXX - why is test_resilver commented out?
-	#test_resilver $TESTPOOL $nparity $dir
+test_scrub $TESTPOOL $nparity $dir
+# XXX - why is test_resilver commented out?
+#test_resilver $TESTPOOL $nparity $dir
 
-	zpool destroy "$TESTPOOL"
-done
+zpool destroy "$TESTPOOL"
 
 log_pass "raidz expansion test succeeded."

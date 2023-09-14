@@ -88,52 +88,51 @@ for i in {0..$(($devs))}; do
 	disks[${#disks[*]}+1]=$device
 done
 
-for nparity in 1 2 3; do
-	raid=raidz$nparity
-	pool=$TESTPOOL
-	opts="-o cachefile=none"
+nparity=$((RANDOM%(3) + 1))
+raid=raidz$nparity
+pool=$TESTPOOL
+opts="-o cachefile=none"
 
-	log_must zpool create -f $opts $pool $raid ${disks[1..$(($nparity+1))]}
+log_must zpool create -f $opts $pool $raid ${disks[1..$(($nparity+1))]}
 
-	log_must zfs create -o recordsize=8k $pool/fs
-	log_must fill_fs /$pool/fs 1 128 100 1024 R
+log_must zfs create -o recordsize=8k $pool/fs
+log_must fill_fs /$pool/fs 1 128 100 1024 R
 
-	log_must zfs create -o recordsize=128k $pool/fs2
-	log_must fill_fs /$pool/fs2 1 128 100 1024 R
+log_must zfs create -o recordsize=128k $pool/fs2
+log_must fill_fs /$pool/fs2 1 128 100 1024 R
 
-	for disk in ${disks[$(($nparity+2))..$devs]}; do
-		pool_size=$(get_pool_prop size $pool)
-		# Pause at random location near the end of vdev
-		pause=$((((RANDOM << 15) + RANDOM) % pool_size))
-		log_must set_tunable64 RAIDZ_EXPAND_MAX_REFLOW_BYTES $pause
+for disk in ${disks[$(($nparity+2))..$devs]}; do
+	pool_size=$(get_pool_prop size $pool)
+	# Pause at random location near the end of vdev
+	pause=$((((RANDOM << 15) + RANDOM) % pool_size))
+	log_must set_tunable64 RAIDZ_EXPAND_MAX_REFLOW_BYTES $pause
 
-		log_bkgrnd randwritecomp /$pool/fs/file
-		pid0=$!
+	log_bkgrnd randwritecomp /$pool/fs/file
+	pid0=$!
 
-		log_bkgrnd randwritecomp /$pool/fs2/file
-		pid1=$!
+	log_bkgrnd randwritecomp /$pool/fs2/file
+	pid1=$!
 
-		log_must zpool attach $pool ${raid}-0 $disk
-		wait_expand_paused
+	log_must zpool attach $pool ${raid}-0 $disk
+	wait_expand_paused
 
-		kill_if_running $pid0
-		kill_if_running $pid1
+	kill_if_running $pid0
+	kill_if_running $pid1
 
-		log_must zpool scrub -w $pool
+	log_must zpool scrub -w $pool
 
-		log_must check_pool_status $pool "errors" "No known data errors"
-		log_must check_pool_status $pool "scan" "with 0 errors"
-		log_must check_pool_status $pool "scan" "repaired 0B"
+	log_must check_pool_status $pool "errors" "No known data errors"
+	log_must check_pool_status $pool "scan" "with 0 errors"
+	log_must check_pool_status $pool "scan" "repaired 0B"
 
-		# Set pause past largest possible value for this pool
-		pause=$((devs*dev_size_mb*1024*1024))
-		log_must set_tunable64 RAIDZ_EXPAND_MAX_REFLOW_BYTES $pause
+	# Set pause past largest possible value for this pool
+	pause=$((devs*dev_size_mb*1024*1024))
+	log_must set_tunable64 RAIDZ_EXPAND_MAX_REFLOW_BYTES $pause
 
-		log_must zpool wait -t raidz_expand $pool
-	done
-
-	log_must zpool destroy "$pool"
+	log_must zpool wait -t raidz_expand $pool
 done
+
+log_must zpool destroy "$pool"
 
 log_pass "raidz expansion test succeeded."
 

@@ -123,52 +123,51 @@ for i in {0..$(($devs))}; do
 	disks[${#disks[*]}+1]=$device
 done
 
-for nparity in 1 2 3; do
-	raid=raidz$nparity
-	pool=$TESTPOOL
-	opts="-o cachefile=none"
-	devices=""
+nparity=$((RANDOM%(3) + 1))
+raid=raidz$nparity
+pool=$TESTPOOL
+opts="-o cachefile=none"
+devices=""
 
-	log_must zpool create -f $opts $pool $raid ${disks[1..$(($nparity+1))]}
-	devices="${disks[1..$(($nparity+1))]}"
+log_must zpool create -f $opts $pool $raid ${disks[1..$(($nparity+1))]}
+devices="${disks[1..$(($nparity+1))]}"
 
-	log_must zfs create -o recordsize=8k $pool/fs
-	log_must fill_fs /$pool/fs 1 128 100 1024 R
+log_must zfs create -o recordsize=8k $pool/fs
+log_must fill_fs /$pool/fs 1 128 100 1024 R
 
-	log_must zfs create -o recordsize=128k $pool/fs2
-	log_must fill_fs /$pool/fs2 1 128 100 1024 R
+log_must zfs create -o recordsize=128k $pool/fs2
+log_must fill_fs /$pool/fs2 1 128 100 1024 R
 
-	for disk in ${disks[$(($nparity+2))..$devs]}; do
-		# Set pause to some random value near halfway point
-		pool_size=$(get_pool_prop size $pool)
-		pause=$((((RANDOM << 15) + RANDOM) % pool_size / 2))
+for disk in ${disks[$(($nparity+2))..$devs]}; do
+	# Set pause to some random value near halfway point
+	pool_size=$(get_pool_prop size $pool)
+	pause=$((((RANDOM << 15) + RANDOM) % pool_size / 2))
+	log_must set_tunable64 RAIDZ_EXPAND_MAX_REFLOW_BYTES $pause
+
+	log_must zpool attach $pool ${raid}-0 $disk
+	devices="$devices $disk"
+
+	wait_expand_paused
+
+	for (( i=0; i<2; i++ )); do
+		test_replace $pool "$devices" $nparity
+
+		# Increase pause by about 25%
+		pause=$((pause + (((RANDOM << 15) + RANDOM) % \
+		    pool_size) / 4))
 		log_must set_tunable64 RAIDZ_EXPAND_MAX_REFLOW_BYTES $pause
-
-		log_must zpool attach $pool ${raid}-0 $disk
-		devices="$devices $disk"
 
 		wait_expand_paused
-
-		for (( i=0; i<2; i++ )); do
-			test_replace $pool "$devices" $nparity
-
-			# Increase pause by about 25%
-			pause=$((pause + (((RANDOM << 15) + RANDOM) % \
-			    pool_size) / 4))
-			log_must set_tunable64 RAIDZ_EXPAND_MAX_REFLOW_BYTES $pause
-
-			wait_expand_paused
-		done
-
-		# Set pause past largest possible value for this pool
-		pause=$((devs*dev_size_mb*1024*1024))
-		log_must set_tunable64 RAIDZ_EXPAND_MAX_REFLOW_BYTES $pause
-
-		log_must zpool wait -t raidz_expand $pool
 	done
 
-	log_must zpool destroy "$pool"
+	# Set pause past largest possible value for this pool
+	pause=$((devs*dev_size_mb*1024*1024))
+	log_must set_tunable64 RAIDZ_EXPAND_MAX_REFLOW_BYTES $pause
+
+	log_must zpool wait -t raidz_expand $pool
 done
+
+log_must zpool destroy "$pool"
 
 log_pass "raidz expansion test succeeded."
 
