@@ -36,11 +36,8 @@
 #	2. For each parity value [1..3]
 #	    - create raidz pool with minimum block device files required
 #	    - create couple of datasets with different recordsize and fill it
-#	    - set raidz expand maximum reflow bytes
-#	    - start randwritecomp on one of the datasets files
-#	    - attach new device to the pool
-#	    - wait for reflow bytes to reach the maximum
-#	    - kill randwritecomp
+#	    - set a max reflow value near pool capacity
+#	    - wait for reflow to reach this max
 #	    - verify pool
 #	    - set reflow bytes to max value to complete the expansion
 

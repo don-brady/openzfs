@@ -1922,7 +1922,8 @@ vdev_open_children_subset(vdev_t *vd, vdev_open_children_func_t *open_func)
  * because it is the "typical" blocksize.  Even though SPA_MAXBLOCKSIZE
  * changed, this algorithm can not change, otherwise it would inconsistently
  * account for existing bp's.  We also hard-code txg 0 for the same reason
- * (expanded RAIDZ vdevs can use different asize for different birth txg's).
+ * since expanded RAIDZ vdevs can use a different asize for different birth
+ * txg's.
  */
 static void
 vdev_set_deflate_ratio(vdev_t *vd)

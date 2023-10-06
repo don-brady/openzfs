@@ -3732,7 +3732,8 @@ ztest_vdev_attach_detach(ztest_ds_t *zd, uint64_t id)
 	}
 
 	/*
-	 * Does not work with expandable raidz, bp corruptions detected.
+	 * RAIDZ leaf VDEV mirrors are not currently supported while a
+	 * RAIDZ expansion is in progress.
 	 */
 	if (ztest_opts.zo_raid_do_expand) {
 		spa_config_exit(spa, SCL_ALL, FTAG);
@@ -4364,9 +4365,9 @@ ztest_vdev_LUN_growth(ztest_ds_t *zd, uint64_t id)
 	}
 
 	/*
-	 * If we under raidz expansion, the test can failed because metaslabs
-	 * count will not increase immediately after vdevs growing. It will
-	 * happen only after raidz expansion completion.
+	 * If we are under raidz expansion, the test can failed because the
+	 * metaslabs count will not increase immediately after the vdev is
+	 * expanded. It will happen only after raidz expansion completion.
 	 */
 	if (spa->spa_raidz_expand) {
 		spa_config_exit(spa, SCL_STATE, spa);
@@ -6414,7 +6415,7 @@ ztest_fault_inject(ztest_ds_t *zd, uint64_t id)
 	 * if raidz expansion is in progress. The leaves value
 	 * (attached raidz children) is variable and strategy for damaging
 	 * blocks will corrupt same data blocks on different child vdevs
-	 * because of reflow process.
+	 * because of the reflow process.
 	 */
 	if (spa->spa_raidz_expand != NULL)
 		goto out;
@@ -8368,7 +8369,7 @@ ztest_run(ztest_shared_t *zs)
 	 * If we got any ENOSPC errors on the previous run, destroy something.
 	 */
 	if (zs->zs_enospc_count != 0) {
-		/* Not expectiong ENOSPC errors during raidz expansion tests */
+		/* Not expecting ENOSPC errors during raidz expansion tests */
 		ASSERT3U(ztest_opts.zo_raidz_expand_test, ==,
 		    RAIDZ_EXPAND_NONE);
 

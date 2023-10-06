@@ -6910,7 +6910,6 @@ spa_vdev_attach(spa_t *spa, uint64_t guid, nvlist_t *nvroot, int replacing,
 	char *oldvdpath, *newvdpath;
 	int newvd_isspare = B_FALSE;
 	int error;
-	boolean_t raidz = B_FALSE;
 
 	ASSERT(spa_writeable(spa));
 
@@ -6948,11 +6947,12 @@ spa_vdev_attach(spa_t *spa, uint64_t guid, nvlist_t *nvroot, int replacing,
 	if (oldvd == NULL)
 		return (spa_vdev_exit(spa, NULL, txg, ENODEV));
 
-	if (oldvd->vdev_ops == &vdev_raidz_ops) {
+	boolean_t raidz = oldvd->vdev_ops == &vdev_raidz_ops;
+
+	if (raidz) {
 		if (!spa_feature_is_enabled(spa, SPA_FEATURE_RAIDZ_EXPANSION))
 			return (spa_vdev_exit(spa, NULL, txg, ENOTSUP));
 
-		raidz = B_TRUE;
 		/*
 		 * Can't expand a raidz while prior expand is in progress.
 		 */
@@ -9422,10 +9422,9 @@ spa_sync_iterate_to_convergence(spa_t *spa, dmu_tx_t *tx)
 		if (pass == 1) {
 			/*
 			 * dsl_pool_sync() -> dp_sync_tasks may have dirtied
-			 * the config.  If that happens, we don't want this
-			 * txg to be able to be a no-op, so be sure to sync
-			 * the config to the MOS before checking for no-op
-			 * txg below.
+			 * the config. If that happens, this txg should not
+			 * be a no-op. So we must sync the config to the MOS
+			 * before checking for no-op.
 			 *
 			 * Note that when the config is dirty, it will
 			 * be written to the MOS (i.e. the MOS will be

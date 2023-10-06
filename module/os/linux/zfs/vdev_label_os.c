@@ -32,7 +32,8 @@
 /*
  * Check if the reserved boot area is in-use.
  *
- * Not aware of any external uses on Linux.
+ * This function always returns 0, as there are no known external uses
+ * of the reserved area on Linux.
  */
 int
 vdev_check_boot_reserve(spa_t *spa, vdev_t *childvd)

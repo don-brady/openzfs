@@ -210,9 +210,10 @@
  * have it flow across all the disks. The metaslab is disabled for allocations
  * during the copy. As an optimization, we only copy the allocated data which
  * can be determined by looking at the metaslab range tree. During the copy we
- * must maintain the redundancy guarantees of the RAIDZ VDEV (e.g. parity count
- * of disks can fail). This means we cannot overwrite data during the reflow
- * that would be needed if a disk is lost.
+ * must maintain the redundancy guarantees of the RAIDZ VDEV (i.e., we still
+ * need to be able to survive loosing parity count disks).  This means we
+ * cannot overwrite data during the reflow that would be needed if a disk is
+ * lost.
  *
  * After the reflow completes, all newly-written blocks will have the new
  * layout, i.e., they will have the parity to data ratio implied by the new
@@ -715,29 +716,28 @@ vdev_raidz_map_alloc_expanded(zio_t *zio,
 
 	/* The zio's size in units of the vdev's minimum sector size. */
 	uint64_t s = size >> ashift;
-	uint64_t q, r, bc, asize, tot;
 
 	/*
 	 * "Quotient": The number of data sectors for this stripe on all but
 	 * the "big column" child vdevs that also contain "remainder" data.
 	 * AKA "full rows"
 	 */
-	q = s / (logical_cols - nparity);
+	uint64_t q = s / (logical_cols - nparity);
 
 	/*
 	 * "Remainder": The number of partial stripe data sectors in this I/O.
 	 * This will add a sector to some, but not all, child vdevs.
 	 */
-	r = s - q * (logical_cols - nparity);
+	uint64_t r = s - q * (logical_cols - nparity);
 
 	/* The number of "big columns" - those which contain remainder data. */
-	bc = (r == 0 ? 0 : r + nparity);
+	uint64_t bc = (r == 0 ? 0 : r + nparity);
 
 	/*
 	 * The total number of data and parity sectors associated with
 	 * this I/O.
 	 */
-	tot = s + nparity * (q + (r == 0 ? 0 : 1));
+	uint64_t tot = s + nparity * (q + (r == 0 ? 0 : 1));
 
 	/* How many rows contain data (not skip) */
 	uint64_t rows = howmany(tot, logical_cols);
@@ -749,7 +749,7 @@ vdev_raidz_map_alloc_expanded(zio_t *zio,
 	rm->rm_nrows = rows;
 	rm->rm_nskip = roundup(tot, nparity + 1) - tot;
 	rm->rm_skipstart = bc;
-	asize = 0;
+	uint64_t asize = 0;
 
 	for (uint64_t row = 0; row < rows; row++) {
 		boolean_t row_use_scratch = B_FALSE;
@@ -831,9 +831,8 @@ vdev_raidz_map_alloc_expanded(zio_t *zio,
 				rc->rc_size = 1ULL << ashift;
 
 				/*
-				 * Parity sectors' rc_abd's  and are set
-				 * below after determining if this is an
-				 * aggregation.
+				 * Parity sectors' rc_abd's are set below
+				 * after determining if this is an aggregation.
 				 */
 			} else if (row == rows - 1 && bc != 0 && c >= bc) {
 				/*
@@ -2381,16 +2380,13 @@ raidz_start_skip_writes(zio_t *zio)
 			continue;
 		ASSERT3P(rc->rc_abd, ==, NULL);
 
-		ASSERT(rc->rc_offset + rc->rc_size <
-		    cvd->vdev_psize - VDEV_LABEL_END_SIZE);
+		ASSERT(rc->rc_offset < cvd->vdev_psize - VDEV_LABEL_END_SIZE);
 
-		zio_nowait(zio_vdev_child_io(zio, NULL, cvd,
-		    rc->rc_offset + rc->rc_size, NULL, 1ULL << ashift,
-		    zio->io_type, zio->io_priority,
+		zio_nowait(zio_vdev_child_io(zio, NULL, cvd, rc->rc_offset,
+		    NULL, 1ULL << ashift, zio->io_type, zio->io_priority,
 		    ZIO_FLAG_NODATA | ZIO_FLAG_OPTIONAL, NULL, NULL));
 	}
 }
-
 
 static void
 vdev_raidz_io_start_read_row(zio_t *zio, raidz_row_t *rr, boolean_t forceparity)
@@ -2522,8 +2518,8 @@ vdev_raidz_io_start(zio_t *zio)
 		 * Note: when the expansion is completing, we set
 		 * vre_state=DSS_FINISHED (in raidz_reflow_complete_sync())
 		 * in a later txg than when we last update spa_ubsync's state
-		 * (see the end of spa_raidz_expand_cb()).  Therefore we may
-		 * see vre_state!=SCANNING before
+		 * (see the end of spa_raidz_expand_thread()).  Therefore we
+		 * may see vre_state!=SCANNING before
 		 * VDEV_TOP_ZAP_RAIDZ_EXPAND_STATE=DSS_FINISHED is reflected
 		 * on disk, but the copying progress has been synced to disk
 		 * (and reflected in spa_ubsync).  In this case it's fine to
@@ -2942,14 +2938,13 @@ raidz_reconstruct(zio_t *zio, int *ltgts, int ntgts, int nparity)
 					 * Note: simulating failure of a
 					 * pre-expansion device can hit more
 					 * than one column, in which case we
-					 * might try to simulate more
-					 * failures than can be
-					 * reconstructed, which is also more
-					 * than the size of my_tgts.  This
-					 * check prevents accessing past the
-					 * end of my_tgts.  The "dead >
-					 * nparity" check below will fail
-					 * this reconstruction attempt.
+					 * might try to simulate more failures
+					 * than can be reconstructed, which is
+					 * also more than the size of my_tgts.
+					 * This check prevents accessing past
+					 * the end of my_tgts.  The "dead >
+					 * nparity" check below will fail this
+					 * reconstruction attempt.
 					 */
 					if (t < VDEV_RAIDZ_MAXPARITY) {
 						my_tgts[t++] = c;
@@ -3489,13 +3484,13 @@ vdev_raidz_io_done(zio_t *zio)
 			 * instead we try every combination of failed current or
 			 * past physical disk. This means that if the incorrect
 			 * sectors were all on Nparity disks at any point in the
-			 * past, we will find the correct data.  I think that
-			 * the only case where this is less durable than
-			 * a non-expanded RAIDZ, is if we have a silent
-			 * failure during expansion.  In that case, one block
-			 * could be partially in the old format and partially
-			 * in the new format, so we'd lost some sectors
-			 * from the old format and some from the new format.
+			 * past, we will find the correct data.  The only known
+			 * case where this is less durable than a non-expanded
+			 * RAIDZ, is if we have a silent failure during
+			 * expansion.  In that case, one block could be
+			 * partially in the old format and partially in the
+			 * new format, so we'd lost some sectors from the old
+			 * format and some from the new format.
 			 *
 			 * e.g. logical_width=4 physical_width=6
 			 * the 15 (6+5+4) possible failed disks are:
@@ -3742,7 +3737,7 @@ raidz_reflow_complete_sync(void *arg, dmu_tx_t *tx)
 	 * Before we change vre_state, the on-disk state must reflect that we
 	 * have completed all copying, so that vdev_raidz_io_start() can use
 	 * vre_state to determine if the reflow is in progress.  See also the
-	 * end of spa_raidz_expand_cb().
+	 * end of spa_raidz_expand_thread().
 	 */
 	VERIFY3U(RRSS_GET_OFFSET(&spa->spa_ubsync), ==,
 	    raidvd->vdev_ms_count << raidvd->vdev_ms_shift);
@@ -4063,7 +4058,7 @@ raidz_reflow_scratch_sync(void *arg, dmu_tx_t *tx)
 		}
 		error = zio_wait(pio);
 		if (error != 0) {
-			zfs_dbgmsg("reflow: error %d readoing scratch location",
+			zfs_dbgmsg("reflow: error %d reading scratch location",
 			    error);
 			goto io_error_exit;
 		}
@@ -4353,7 +4348,7 @@ vdev_raidz_reflow_copy_scratch(spa_t *spa)
 }
 
 static boolean_t
-spa_raidz_expand_cb_check(void *arg, zthr_t *zthr)
+spa_raidz_expand_thread_check(void *arg, zthr_t *zthr)
 {
 	(void) zthr;
 	spa_t *spa = arg;
@@ -4368,7 +4363,7 @@ spa_raidz_expand_cb_check(void *arg, zthr_t *zthr)
  * Can be called multiple times if the reflow is paused
  */
 static void
-spa_raidz_expand_cb(void *arg, zthr_t *zthr)
+spa_raidz_expand_thread(void *arg, zthr_t *zthr)
 {
 	spa_t *spa = arg;
 	vdev_raidz_expand_t *vre = spa->spa_raidz_expand;
@@ -4576,7 +4571,8 @@ spa_start_raidz_expansion_thread(spa_t *spa)
 {
 	ASSERT3P(spa->spa_raidz_expand_zthr, ==, NULL);
 	spa->spa_raidz_expand_zthr = zthr_create("raidz_expand",
-	    spa_raidz_expand_cb_check, spa_raidz_expand_cb, spa, defclsyspri);
+	    spa_raidz_expand_thread_check, spa_raidz_expand_thread,
+	    spa, defclsyspri);
 }
 
 void
