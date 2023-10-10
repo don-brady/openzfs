@@ -107,9 +107,8 @@ for disk in ${disks[$(($nparity+2))..$devs]}; do
 	log_must zpool clear $pool
 	log_must zpool scrub -w $pool
 
-	# XXX step sometimes FAILED
 	log_must zpool status -v
-	# log_must check_pool_status $pool "scan" "repaired 0B"
+	log_must check_pool_status $pool "scan" "with 0 errors"
 done
 
 log_must zpool destroy "$pool"

@@ -212,8 +212,7 @@ log_must fill_fs /$TESTPOOL/fs3 1 512 100 1024 R
 log_must check_pool_status $TESTPOOL "errors" "No known data errors"
 
 test_scrub $TESTPOOL $nparity $dir
-# XXX - why is test_resilver commented out?
-#test_resilver $TESTPOOL $nparity $dir
+test_resilver $TESTPOOL $nparity $dir
 
 zpool destroy "$TESTPOOL"
 

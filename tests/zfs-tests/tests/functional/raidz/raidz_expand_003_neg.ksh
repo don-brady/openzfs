@@ -57,6 +57,7 @@ function cleanup
 	done
 
 	log_must set_tunable32 PREFETCH_DISABLE $prefetch_disable
+	log_must set_tunable64 RAIDZ_EXPAND_MAX_REFLOW_BYTES 0
 }
 
 log_onexit cleanup
@@ -82,11 +83,18 @@ log_must zpool checkpoint $pool
 log_mustnot zpool attach $pool ${raid}-0 ${disks[$devs]}
 log_must zpool destroy $pool
 
+#
 # case 2: expansion in progress, try to checkpoint
+#
+# Sets pause point at 25% of allocated space so that we know an
+# expansion is still in progress when we attempt the checkpoint
+#
 log_must zpool create -f $opts $pool $raid ${disks[1..$(($devs-1))]}
 log_must zfs set primarycache=metadata $pool
 log_must zfs create $pool/fs
 log_must fill_fs /$pool/fs 1 512 100 1024 R
+allocated=$(zpool list -Hp -o allocated $pool)
+log_must set_tunable64 RAIDZ_EXPAND_MAX_REFLOW_BYTES $((allocated / 4))
 log_must zpool attach $pool ${raid}-0 ${disks[$devs]}
 log_mustnot zpool checkpoint $pool
 log_must zpool destroy $pool
