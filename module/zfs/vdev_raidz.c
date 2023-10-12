@@ -632,7 +632,9 @@ vdev_raidz_map_alloc(zio_t *zio, uint64_t ashift, uint64_t dcols,
 		rc->rc_devidx = col;
 		rc->rc_offset = coff;
 
-		if (c < bc)
+		if (c >= acols)
+			rc->rc_size = 0;
+		else if (c < bc)
 			rc->rc_size = (q + 1) << ashift;
 		else
 			rc->rc_size = q << ashift;
@@ -844,7 +846,6 @@ vdev_raidz_map_alloc_expanded(zio_t *zio,
 				rc->rc_size = 0;
 				rc->rc_abd = NULL;
 			} else {
-				/* XXX ASCII art diagram here */
 				/* "data column" (col excluding parity) */
 				uint64_t off;
 
@@ -2844,6 +2845,10 @@ raidz_restore_orig_data(raidz_map_t *rm)
 }
 
 /*
+ * During raidz_reconstruct() for expanded VDEV, we need special consideration
+ * failure simulations.  See note in raidz_reconstruct() on simulating failure
+ * of a pre-expansion device.
+ *
  * Treating logical child i as failed, return TRUE if the given column should
  * be treated as failed.  The idea of logical children allows us to imagine
  * that a disk silently failed before a RAIDZ expansion (reads from this disk
