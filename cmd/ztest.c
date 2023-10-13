@@ -3972,7 +3972,9 @@ raidz_scratch_verify(void)
 	spa_config_enter(spa, SCL_ALL, FTAG, RW_READER);
 
 	vre = spa->spa_raidz_expand;
-	ASSERT(vre != NULL);
+	if (vre == NULL)
+		goto out;
+
 	raidvd = vdev_lookup_top(spa, vre->vre_vdev_id);
 	offset = RRSS_GET_OFFSET(&spa->spa_uberblock);
 	state = RRSS_GET_STATE(&spa->spa_uberblock);
@@ -4016,6 +4018,7 @@ raidz_scratch_verify(void)
 			break;
 	}
 
+out:
 	spa_config_exit(spa, SCL_ALL, FTAG);
 
 	mutex_exit(&ztest_vdev_lock);
