@@ -363,6 +363,7 @@ typedef enum {
 	VDEV_PROP_CHECKSUM_T,
 	VDEV_PROP_IO_N,
 	VDEV_PROP_IO_T,
+	VDEV_PROP_RAIDZ_EXPANDING,
 	VDEV_NUM_PROPS
 } vdev_prop_t;
 
@@ -903,13 +904,13 @@ typedef struct zpool_load_policy {
 	"org.zfsonlinux:allocation_bias"
 
 #define	VDEV_TOP_ZAP_RAIDZ_EXPAND_STATE \
-	"org.freebsd:raidz_expand_state"
+	"org.openzfs:raidz_expand_state"
 #define	VDEV_TOP_ZAP_RAIDZ_EXPAND_START_TIME \
-	"org.freebsd:raidz_expand_start_time"
+	"org.openzfs:raidz_expand_start_time"
 #define	VDEV_TOP_ZAP_RAIDZ_EXPAND_END_TIME \
-	"org.freebsd:raidz_expand_end_time"
+	"org.openzfs:raidz_expand_end_time"
 #define	VDEV_TOP_ZAP_RAIDZ_EXPAND_BYTES_COPIED \
-	"org.freebsd:raidz_expand_bytes_copied"
+	"org.openzfs:raidz_expand_bytes_copied"
 
 /* vdev metaslab allocation bias */
 #define	VDEV_ALLOC_BIAS_LOG		"log"

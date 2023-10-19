@@ -42,6 +42,7 @@
 #include <sys/vdev_raidz_impl.h>
 #include <sys/vdev_draid.h>
 #include <sys/uberblock_impl.h>
+#include <sys/dsl_scan.h>
 
 #ifdef ZFS_DEBUG
 #include <sys/vdev.h>	/* For vdev_xlate() in vdev_raidz_io_verify() */
@@ -362,6 +363,14 @@ static unsigned long raidz_expand_max_copy_bytes = 10 * SPA_MAXBLOCKSIZE;
  * or greater than the value below.
  */
 static unsigned long raidz_io_aggregate_rows = 4;
+
+/*
+ * Automatically start a pool scrub when a RAIDZ expansion completes in
+ * order to verify the checksums of all blocks which have been copied
+ * during the expansion.  Automatic scrubbing is enabled by default and
+ * is strongly recommended.
+ */
+static int zfs_scrub_after_expand = 1;
 
 static void
 vdev_raidz_row_free(raidz_row_t *rr)
@@ -3775,6 +3784,15 @@ raidz_reflow_complete_sync(void *arg, dmu_tx_t *tx)
 	spa_async_request(spa, SPA_ASYNC_AUTOTRIM_RESTART);
 
 	spa_notify_waiters(spa);
+
+	/*
+	 * While we're in syncing context take the opportunity to
+	 * setup a scrub. All the data has been sucessfully copied
+	 * but we have not validated any checksums.
+	 */
+	pool_scan_func_t func = POOL_SCAN_SCRUB;
+	if (zfs_scrub_after_expand && dsl_scan_setup_check(&func, tx) == 0)
+		dsl_scan_setup_sync(&func, tx);
 }
 
 /*

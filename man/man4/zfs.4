@@ -1790,6 +1790,12 @@ even if there were unrepairable errors.
 Intended to be used during pool repair or recovery to
 stop resilvering when the pool is next imported.
 .
+.It Sy zfs_scrub_after_expand Ns = Ns Sy 1 Ns | Ns 0 Pq int
+Automatically start a pool scrub after a RAIDZ expansion completes
+in order to verify the checksums of all blocks which have been
+copied during the expansion.
+This is enabled by default and strongly recommended.
+.
 .It Sy zfs_scrub_min_time_ms Ns = Ns Sy 1000 Ns ms Po 1 s Pc Pq uint
 Scrubs are processed by the sync thread.
 While scrubbing, it will spend at least this much time

@@ -103,6 +103,9 @@ space than is expected may be reported for newly-written blocks, according to
 .Nm df ,
 .Nm ls Fl s ,
 and similar tools.
+.Pp
+A pool-wide scrub is initiated at the end of the expansion in order to verify
+the checksums of all blocks which have been copied during the expansion.
 .Bl -tag -width Ds
 .It Fl f
 Forces use of

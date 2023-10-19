@@ -6244,6 +6244,14 @@ vdev_prop_get(vdev_t *vd, nvlist_t *innvl, nvlist_t *outnvl)
 				vdev_prop_add_list(outnvl, propname, NULL,
 				    vd->vdev_removing, ZPROP_SRC_NONE);
 				continue;
+			case VDEV_PROP_RAIDZ_EXPANDING:
+				/* Only expose this for raidz */
+				if (vd->vdev_ops == &vdev_raidz_ops) {
+					vdev_prop_add_list(outnvl, propname,
+					    NULL, vd->vdev_rz_expanding,
+					    ZPROP_SRC_NONE);
+				}
+				continue;
 			/* Numeric Properites */
 			case VDEV_PROP_ALLOCATING:
 				/* Leaf vdevs cannot have this property */

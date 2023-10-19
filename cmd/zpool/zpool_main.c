@@ -6691,7 +6691,7 @@ zpool_do_replace(int argc, char **argv)
  *	-f	Force attach, even if <new_device> appears to be in use.
  *	-s	Use sequential instead of healing reconstruction for resilver.
  *	-o	Set property=value.
- *	-w	Wait for resilvering (mirror) or expanson (raidz) to complete
+ *	-w	Wait for resilvering (mirror) or expansion (raidz) to complete
  *		before returning.
  *
  * Attach <new_device> to a <device> or <vdev>, where the vdev can be of type
@@ -8234,6 +8234,8 @@ print_raidz_expand_status(zpool_handle_t *zhp, pool_raidz_expand_stat_t *pres)
 
 	time_t start = pres->pres_start_time;
 	time_t end = pres->pres_end_time;
+	char *vname =
+	    zpool_vdev_name(g_zfs, zhp, child[pres->pres_expanding_vdev], 0);
 	zfs_nicenum(pres->pres_reflowed, copied_buf, sizeof (copied_buf));
 
 	/*
@@ -8242,8 +8244,9 @@ print_raidz_expand_status(zpool_handle_t *zhp, pool_raidz_expand_stat_t *pres)
 	if (pres->pres_state == DSS_FINISHED) {
 		uint64_t minutes_taken = (end - start) / 60;
 
-		(void) printf(gettext("Expansion of vdev %u copied %s "
+		(void) printf(gettext("Expansion of %s-%u copied %s "
 		    "in %lluh%um, completed on %s"),
+		    vname,
 		    (int)pres->pres_expanding_vdev,
 		    copied_buf,
 		    (u_longlong_t)(minutes_taken / 60),
@@ -8261,8 +8264,8 @@ print_raidz_expand_status(zpool_handle_t *zhp, pool_raidz_expand_stat_t *pres)
 		 * Expansion is in progress.
 		 */
 		(void) printf(gettext(
-		    "Expansion of vdev %u in progress since %s"),
-		    (int)pres->pres_expanding_vdev, ctime(&start));
+		    "Expansion of %s-%u in progress since %s"),
+		    vname, (int)pres->pres_expanding_vdev, ctime(&start));
 
 		copied = pres->pres_reflowed > 0 ? pres->pres_reflowed : 1;
 		total = pres->pres_to_reflow;
@@ -8298,6 +8301,7 @@ print_raidz_expand_status(zpool_handle_t *zhp, pool_raidz_expand_stat_t *pres)
 			    ", (copy is slow, no estimated time)\n"));
 		}
 	}
+	free(vname);
 }
 static void
 print_checkpoint_status(pool_checkpoint_stat_t *pcs)
