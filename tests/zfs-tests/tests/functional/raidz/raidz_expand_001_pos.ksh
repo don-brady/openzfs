@@ -28,7 +28,7 @@
 
 #
 # DESCRIPTION:
-#	'zpool attach poolname raidz ...' should attach new devive to the pool.
+#	'zpool attach poolname raidz ...' should attach new device to the pool.
 #
 # STRATEGY:
 #	1. Create block device files for the test raidz pool
@@ -102,9 +102,7 @@ function test_resilver # <pool> <parity> <dir>
 		log_must zpool replace -f $pool $dir/dev-$i
 	done
 
-	while ! is_pool_resilvered $pool; do
-		sleep 1
-	done
+	log_must zpool wait -t resilver $pool
 
 	log_must check_pool_status $pool "errors" "No known data errors"
 
@@ -126,9 +124,7 @@ function test_resilver # <pool> <parity> <dir>
 		log_must zpool replace -f $pool $dir/dev-$i
 	done
 
-	while ! is_pool_resilvered $pool; do
-		sleep 1
-	done
+	log_must zpool wait -t resilver $pool
 
 	log_must check_pool_status $pool "errors" "No known data errors"
 

@@ -1027,7 +1027,6 @@ vdev_draid_map_alloc_row(zio_t *zio, raidz_row_t **rrp, uint64_t io_offset,
 	ASSERT3U(vdc->vdc_nparity, >, 0);
 
 	raidz_row_t *rr = vdev_raidz_row_alloc(groupwidth);
-	rr->rr_scols = groupwidth;
 	rr->rr_bigcols = bc;
 	rr->rr_firstdatacol = vdc->vdc_nparity;
 #ifdef ZFS_DEBUG
@@ -2024,8 +2023,6 @@ vdev_draid_io_start_read(zio_t *zio, raidz_row_t *rr)
 		}
 	}
 }
-
-extern const zio_vsd_ops_t vdev_raidz_vsd_ops;
 
 /*
  * Start an IO operation to a dRAID vdev.

@@ -154,8 +154,9 @@
  * the VDEV) when an expansion starts.  And the expansion will pause if any
  * disk in the VDEV fails, and resume once the VDEV is healthy again. All other
  * operations on the pool can continue while an expansion is in progress (e.g.
- * read/write, snapshot, zpool add, etc). Following a reboot or export/import,
- * the expansion resumes where it left off.
+ * read/write, snapshot, zpool add, etc). Except zpool checkpoint, zpool trim,
+ * and zpool initialize which can't be run during an expansion.  Following a
+ * reboot or export/import, the expansion resumes where it left off.
  *
  * == Reflowing the Data ==
  *
@@ -212,7 +213,7 @@
  * during the copy. As an optimization, we only copy the allocated data which
  * can be determined by looking at the metaslab range tree. During the copy we
  * must maintain the redundancy guarantees of the RAIDZ VDEV (i.e., we still
- * need to be able to survive loosing parity count disks).  This means we
+ * need to be able to survive losing parity count disks).  This means we
  * cannot overwrite data during the reflow that would be needed if a disk is
  * lost.
  *
@@ -1409,8 +1410,8 @@ vdev_raidz_reconstruct_q(raidz_row_t *rr, int *tgts, int ntgts)
 	int c, exp;
 	abd_t *dst, *src;
 
-	zfs_dbgmsg("reconstruct_q(rm=%px x=%u)",
-	    rr, x);
+	if (zfs_flags & ZFS_DEBUG_RAIDZ_RECONSTRUCT)
+		zfs_dbgmsg("reconstruct_q(rm=%px x=%u)", rr, x);
 
 	ASSERT(ntgts == 1);
 
@@ -1458,8 +1459,8 @@ vdev_raidz_reconstruct_pq(raidz_row_t *rr, int *tgts, int ntgts)
 	int y = tgts[1];
 	abd_t *xd, *yd;
 
-	zfs_dbgmsg("reconstruct_pq(rm=%px x=%u y=%u)",
-	    rr, x, y);
+	if (zfs_flags & ZFS_DEBUG_RAIDZ_RECONSTRUCT)
+		zfs_dbgmsg("reconstruct_pq(rm=%px x=%u y=%u)", rr, x, y);
 
 	ASSERT(ntgts == 2);
 	ASSERT(x < y);
@@ -1900,8 +1901,6 @@ vdev_raidz_reconstruct_general(raidz_row_t *rr, int *tgts, int ntgts)
 	int nmissing_rows;
 	int missing_rows[VDEV_RAIDZ_MAXPARITY];
 	int parity_map[VDEV_RAIDZ_MAXPARITY];
-	zfs_dbgmsg("reconstruct_general(rm=%px ntgts=%u)",
-	    rr, ntgts);
 	uint8_t *p, *pp;
 	size_t psize;
 	uint8_t *rows[VDEV_RAIDZ_MAXPARITY];
@@ -1910,6 +1909,8 @@ vdev_raidz_reconstruct_general(raidz_row_t *rr, int *tgts, int ntgts)
 
 	abd_t **bufs = NULL;
 
+	if (zfs_flags & ZFS_DEBUG_RAIDZ_RECONSTRUCT)
+		zfs_dbgmsg("reconstruct_general(rm=%px ntgts=%u)", rr, ntgts);
 	/*
 	 * Matrix reconstruction can't use scatter ABDs yet, so we allocate
 	 * temporary linear ABDs if any non-linear ABDs are found.
@@ -2043,20 +2044,23 @@ vdev_raidz_reconstruct_row(raidz_map_t *rm, raidz_row_t *rr,
 	int nbadparity, nbaddata;
 	int parity_valid[VDEV_RAIDZ_MAXPARITY];
 
-	zfs_dbgmsg("reconstruct(rm=%px nt=%u cols=%u md=%u mp=%u)",
-	    rr, nt, (int)rr->rr_cols, (int)rr->rr_missingdata,
-	    (int)rr->rr_missingparity);
+	if (zfs_flags & ZFS_DEBUG_RAIDZ_RECONSTRUCT) {
+		zfs_dbgmsg("reconstruct(rm=%px nt=%u cols=%u md=%u mp=%u)",
+		    rr, nt, (int)rr->rr_cols, (int)rr->rr_missingdata,
+		    (int)rr->rr_missingparity);
+	}
 
 	nbadparity = rr->rr_firstdatacol;
 	nbaddata = rr->rr_cols - nbadparity;
 	ntgts = 0;
 	for (i = 0, c = 0; c < rr->rr_cols; c++) {
-		zfs_dbgmsg("reconstruct(rm=%px col=%u devid=%u "
-		    "offset=%llx error=%u)",
-		    rr, c,
-		    (int)rr->rr_col[c].rc_devidx,
-		    (long long)rr->rr_col[c].rc_offset,
-		    (int)rr->rr_col[c].rc_error);
+		if (zfs_flags & ZFS_DEBUG_RAIDZ_RECONSTRUCT) {
+			zfs_dbgmsg("reconstruct(rm=%px col=%u devid=%u "
+			    "offset=%llx error=%u)",
+			    rr, c, (int)rr->rr_col[c].rc_devidx,
+			    (long long)rr->rr_col[c].rc_offset,
+			    (int)rr->rr_col[c].rc_error);
+		}
 		if (c < rr->rr_firstdatacol)
 			parity_valid[c] = B_FALSE;
 
@@ -2347,7 +2351,7 @@ vdev_raidz_io_start_write(zio_t *zio, raidz_row_t *rr)
 		if (rc->rc_size == 0)
 			continue;
 
-		ASSERT(rc->rc_offset + rc->rc_size <
+		ASSERT3U(rc->rc_offset + rc->rc_size, <,
 		    cvd->vdev_psize - VDEV_LABEL_END_SIZE);
 
 		ASSERT3P(rc->rc_abd, !=, NULL);
@@ -2359,7 +2363,8 @@ vdev_raidz_io_start_write(zio_t *zio, raidz_row_t *rr)
 		if (rc->rc_shadow_devidx != INT_MAX) {
 			vdev_t *cvd2 = vd->vdev_child[rc->rc_shadow_devidx];
 
-			ASSERT(rc->rc_shadow_offset + abd_get_size(rc->rc_abd) <
+			ASSERT3U(
+			    rc->rc_shadow_offset + abd_get_size(rc->rc_abd), <,
 			    cvd2->vdev_psize - VDEV_LABEL_END_SIZE);
 
 			zio_nowait(zio_vdev_child_io(zio, NULL, cvd2,
@@ -2390,7 +2395,8 @@ raidz_start_skip_writes(zio_t *zio)
 			continue;
 		ASSERT3P(rc->rc_abd, ==, NULL);
 
-		ASSERT(rc->rc_offset < cvd->vdev_psize - VDEV_LABEL_END_SIZE);
+		ASSERT3U(rc->rc_offset, <,
+		    cvd->vdev_psize - VDEV_LABEL_END_SIZE);
 
 		zio_nowait(zio_vdev_child_io(zio, NULL, cvd, rc->rc_offset,
 		    NULL, 1ULL << ashift, zio->io_type, zio->io_priority,
@@ -2780,9 +2786,7 @@ vdev_raidz_io_done_verified(zio_t *zio, raidz_row_t *rr)
 
 			zfs_dbgmsg("zio=%px repairing c=%u devidx=%u "
 			    "offset=%llx",
-			    zio, c,
-			    rc->rc_devidx,
-			    (long long)rc->rc_offset);
+			    zio, c, rc->rc_devidx, (long long)rc->rc_offset);
 
 			zio_nowait(zio_vdev_child_io(zio, NULL, cvd,
 			    rc->rc_offset, rc->rc_abd, rc->rc_size,
@@ -2810,12 +2814,6 @@ vdev_raidz_io_done_verified(zio_t *zio, raidz_row_t *rr)
 			if (rc->rc_shadow_devidx == INT_MAX || rc->rc_size == 0)
 				continue;
 			vdev_t *cvd = vd->vdev_child[rc->rc_shadow_devidx];
-
-			zfs_dbgmsg("zio=%px overwriting c=%u shadow_devidx=%u "
-			    "shadow_offset=%llx",
-			    zio, c,
-			    rc->rc_shadow_devidx,
-			    (long long)rc->rc_shadow_offset);
 
 			/*
 			 * Note: We don't want to update the repair stats
@@ -3420,7 +3418,7 @@ vdev_raidz_io_done(zio_t *zio)
 
 				for (int c = 0; c < rr->rr_cols; c++) {
 					raidz_col_t *rc = &rr->rr_col[c];
-					if (rc->rc_size == 0)
+					if (rc->rc_tried || rc->rc_size == 0)
 						continue;
 
 					raidz_col_t *prc =
@@ -3855,8 +3853,8 @@ raidz_reflow_read_done(zio_t *zio)
 	 * will retry later due to vre_failed_offset.
 	 */
 	if (zio->io_error != 0 || !vdev_dtl_empty(zio->io_vd, DTL_MISSING)) {
-		zfs_dbgmsg("reflow read failed off=%llu size=%llu txg=%llu \
-err=%u partial_dtl_empty=%u missing_dtl_empty=%u",
+		zfs_dbgmsg("reflow read failed off=%llu size=%llu txg=%llu "
+		    "err=%u partial_dtl_empty=%u missing_dtl_empty=%u",
 		    (long long)rra->rra_lr->lr_offset,
 		    (long long)rra->rra_lr->lr_length,
 		    (long long)rra->rra_txg,
@@ -4995,3 +4993,6 @@ ZFS_MODULE_PARAM(zfs_vdev, raidz_, expand_max_copy_bytes, ULONG, ZMOD_RW,
 	"Max amount of concurrent i/o for RAIDZ expansion");
 ZFS_MODULE_PARAM(zfs_vdev, raidz_, io_aggregate_rows, ULONG, ZMOD_RW,
 	"For expanded RAIDZ, aggregate reads that have more rows than this");
+ZFS_MODULE_PARAM(zfs, zfs_, scrub_after_expand, INT, ZMOD_RW,
+	"For expanded RAIDZ, automatically start a pool scrub when expansion "
+	"completes");

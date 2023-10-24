@@ -8286,7 +8286,7 @@ print_raidz_expand_status(zpool_handle_t *zhp, pool_raidz_expand_stat_t *pres)
 		 * do not print estimated time if hours_left is more than
 		 * 30 days
 		 */
-		(void) printf(gettext("    %s copied out of %s at %s/s, "
+		(void) printf(gettext("\t%s copied out of %s at %s/s, "
 		    "%.2f%% done"),
 		    examined_buf, total_buf, rate_buf, 100 * fraction_done);
 		if (pres->pres_waiting_for_resilver) {
