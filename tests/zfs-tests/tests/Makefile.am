@@ -1667,8 +1667,6 @@ nobase_dist_datadir_zfs_tests_tests_SCRIPTS += \
 	functional/raidz/cleanup.ksh \
 	functional/raidz/raidz_001_neg.ksh \
 	functional/raidz/raidz_002_pos.ksh \
-	functional/raidz/raidz_003_pos.ksh \
-	functional/raidz/raidz_004_pos.ksh \
 	functional/raidz/raidz_expand_001_pos.ksh \
 	functional/raidz/raidz_expand_002_pos.ksh \
 	functional/raidz/raidz_expand_003_neg.ksh \
