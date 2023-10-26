@@ -4369,6 +4369,17 @@ vdev_raidz_reflow_copy_scratch(spa_t *spa)
 }
 
 static boolean_t
+vdev_raidz_expand_child_replacing(vdev_t *raidz_vd)
+{
+	for (int i = 0; i < raidz_vd->vdev_children; i++) {
+		/* Quick check if a child is being replace */
+		if (!raidz_vd->vdev_child[i]->vdev_ops->vdev_op_leaf)
+			return (B_TRUE);
+	}
+	return (B_FALSE);
+}
+
+static boolean_t
 spa_raidz_expand_thread_check(void *arg, zthr_t *zthr)
 {
 	(void) zthr;
@@ -4402,7 +4413,9 @@ spa_raidz_expand_thread(void *arg, zthr_t *zthr)
 
 		/* if we encountered errors then pause */
 		if (vre->vre_offset == 0) {
+			mutex_enter(&vre->vre_lock);
 			vre->vre_waiting_for_resilver = B_TRUE;
+			mutex_exit(&vre->vre_lock);
 			return;
 		}
 	}
@@ -4416,7 +4429,8 @@ spa_raidz_expand_thread(void *arg, zthr_t *zthr)
 	for (uint64_t i = vre->vre_offset >> raidvd->vdev_ms_shift;
 	    i < raidvd->vdev_ms_count &&
 	    !zthr_iscancelled(zthr) &&
-	    vre->vre_failed_offset == UINT64_MAX; i++) {
+	    vre->vre_failed_offset == UINT64_MAX &&
+	    !vre->vre_waiting_for_resilver; i++) {
 		metaslab_t *msp = raidvd->vdev_ms[i];
 
 		metaslab_disable(msp);
@@ -4515,6 +4529,16 @@ spa_raidz_expand_thread(void *arg, zthr_t *zthr)
 			spa_config_enter(spa, SCL_CONFIG, FTAG, RW_READER);
 			raidvd = vdev_lookup_top(spa, vre->vre_vdev_id);
 
+			if (!vre->vre_waiting_for_resilver &&
+			    vdev_raidz_expand_child_replacing(raidvd)) {
+				mutex_enter(&vre->vre_lock);
+				vdev_dbgmsg(raidvd, "pausing raidz expansion "
+				    "during vdev replace");
+				vre->vre_waiting_for_resilver = B_TRUE;
+				zthr_wakeup(spa->spa_raidz_expand_zthr);
+				mutex_exit(&vre->vre_lock);
+			}
+
 			boolean_t needsync =
 			    raidz_reflow_impl(raidvd, vre, rt, tx);
 
@@ -4555,11 +4579,13 @@ spa_raidz_expand_thread(void *arg, zthr_t *zthr)
 	txg_wait_synced(spa->spa_dsl_pool, 0);
 
 	if (!zthr_iscancelled(zthr) &&
-	    vre->vre_failed_offset == UINT64_MAX) {
+	    vre->vre_offset == raidvd->vdev_ms_count << raidvd->vdev_ms_shift) {
 		/*
-		 * We are not being canceled, so the reflow must be
+		 * We are not being canceled or paused, so the reflow must be
 		 * complete. In that case also mark it as completed on disk.
 		 */
+		ASSERT3U(vre->vre_failed_offset, ==, UINT64_MAX);
+		ASSERT0(vre->vre_waiting_for_resilver);
 		VERIFY0(dsl_sync_task(spa_name(spa), NULL,
 		    raidz_reflow_complete_sync, spa,
 		    0, ZFS_SPACE_CHECK_NONE));
