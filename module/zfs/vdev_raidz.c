@@ -4372,7 +4372,7 @@ static boolean_t
 vdev_raidz_expand_child_replacing(vdev_t *raidz_vd)
 {
 	for (int i = 0; i < raidz_vd->vdev_children; i++) {
-		/* Quick check if a child is being replace */
+		/* Quick check if a child is being replaced */
 		if (!raidz_vd->vdev_child[i]->vdev_ops->vdev_op_leaf)
 			return (B_TRUE);
 	}

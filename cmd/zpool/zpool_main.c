@@ -8242,16 +8242,12 @@ print_raidz_expand_status(zpool_handle_t *zhp, pool_raidz_expand_stat_t *pres)
 	 * Expansion is finished or canceled.
 	 */
 	if (pres->pres_state == DSS_FINISHED) {
-		uint64_t minutes_taken = (end - start) / 60;
+		char time_buf[32];
+		secs_to_dhms(end - start, time_buf);
 
-		(void) printf(gettext("Expansion of %s-%u copied %s "
-		    "in %lluh%um, completed on %s"),
-		    vname,
-		    (int)pres->pres_expanding_vdev,
-		    copied_buf,
-		    (u_longlong_t)(minutes_taken / 60),
-		    (uint_t)(minutes_taken % 60),
-		    ctime((time_t *)&end));
+		(void) printf(gettext("expanded %s-%u copied %s in %s, "
+		    "on %s"), vname, (int)pres->pres_expanding_vdev,
+		    copied_buf, time_buf, ctime((time_t *)&end));
 	} else {
 		char examined_buf[7], total_buf[7], rate_buf[7];
 		uint64_t copied, total, elapsed, secs_left;
@@ -8264,7 +8260,7 @@ print_raidz_expand_status(zpool_handle_t *zhp, pool_raidz_expand_stat_t *pres)
 		 * Expansion is in progress.
 		 */
 		(void) printf(gettext(
-		    "Expansion of %s-%u in progress since %s"),
+		    "expansion of %s-%u in progress since %s"),
 		    vname, (int)pres->pres_expanding_vdev, ctime(&start));
 
 		copied = pres->pres_reflowed > 0 ? pres->pres_reflowed : 1;
@@ -8286,12 +8282,11 @@ print_raidz_expand_status(zpool_handle_t *zhp, pool_raidz_expand_stat_t *pres)
 		 * do not print estimated time if hours_left is more than
 		 * 30 days
 		 */
-		(void) printf(gettext("\t%s copied out of %s at %s/s, "
-		    "%.2f%% done"),
+		(void) printf(gettext("\t%s / %s copied at %s/s, %.2f%% done"),
 		    examined_buf, total_buf, rate_buf, 100 * fraction_done);
 		if (pres->pres_waiting_for_resilver) {
-			(void) printf(gettext(", paused due to io errors, "
-			    "waiting for resilver or clear\n"));
+			(void) printf(gettext(", paused for resilver or "
+			    "clear\n"));
 		} else if (secs_left < (30 * 24 * 3600)) {
 			char time_buf[32];
 			secs_to_dhms(secs_left, time_buf);
