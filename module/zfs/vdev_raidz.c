@@ -897,12 +897,6 @@ vdev_raidz_map_alloc_expanded(zio_t *zio,
 				    ((b + c) / physical_cols) << ashift;
 				if (row_use_scratch)
 					rc->rc_shadow_offset -= VDEV_BOOT_SIZE;
-
-				zfs_dbgmsg("rm=%px row=%d b+c=%llu "
-				    "shadow_devidx=%u shadow_offset=%llu",
-				    rm, (int)row, (long long)(b + c),
-				    (int)rc->rc_shadow_devidx,
-				    (long long)rc->rc_shadow_offset);
 			}
 
 			asize += rc->rc_size;
@@ -2697,9 +2691,8 @@ raidz_parity_verify(zio_t *zio, raidz_row_t *rr)
 			continue;
 
 		if (abd_cmp(orig[c], rc->rc_abd) != 0) {
-			zfs_dbgmsg("raidz_parity_verify found error on "
-			    "col=%u devidx=%u",
-			    c, (int)rc->rc_devidx);
+			zfs_dbgmsg("found error on col=%u devidx=%u off %llx",
+			    c, (int)rc->rc_devidx, (u_longlong_t)rc->rc_offset);
 			vdev_raidz_checksum_error(zio, rc, orig[c]);
 			rc->rc_error = SET_ERROR(ECKSUM);
 			ret++;
@@ -3699,10 +3692,6 @@ raidz_reflow_sync(void *arg, dmu_tx_t *tx)
 	/*
 	 * Update the uberblock that will be written when this txg completes.
 	 */
-	zfs_dbgmsg("reflow syncing txg=%llu off_pertxg=%llu failed_off=%llu",
-	    (long long)dmu_tx_get_txg(tx),
-	    (long long)vre->vre_offset_pertxg[txgoff],
-	    (long long)vre->vre_failed_offset);
 	RAIDZ_REFLOW_SET(&spa->spa_uberblock,
 	    RRSS_SCRATCH_INVALID_SYNCED_REFLOW, new_offset);
 	vre->vre_offset_pertxg[txgoff] = 0;
@@ -3894,6 +3883,17 @@ raidz_reflow_record_progress(vdev_raidz_expand_t *vre, uint64_t offset,
 }
 
 static boolean_t
+vdev_raidz_expand_child_replacing(vdev_t *raidz_vd)
+{
+	for (int i = 0; i < raidz_vd->vdev_children; i++) {
+		/* Quick check if a child is being replaced */
+		if (!raidz_vd->vdev_child[i]->vdev_ops->vdev_op_leaf)
+			return (B_TRUE);
+	}
+	return (B_FALSE);
+}
+
+static boolean_t
 raidz_reflow_impl(vdev_t *vd, vdev_raidz_expand_t *vre, range_tree_t *rt,
     dmu_tx_t *tx)
 {
@@ -3935,13 +3935,6 @@ raidz_reflow_impl(vdev_t *vd, vdev_raidz_expand_t *vre, range_tree_t *rt,
 	if (blkid >= next_overwrite_blkid) {
 		raidz_reflow_record_progress(vre,
 		    next_overwrite_blkid << ashift, tx);
-
-		zfs_dbgmsg("copying offset %llu, ubsync offset = %llu, "
-		    "max_overwrite = %llu wait for txg %llu to sync",
-		    (long long)offset,
-		    (long long)ubsync_blkid << ashift,
-		    (long long)next_overwrite_blkid << ashift,
-		    (long long)dmu_tx_get_txg(tx));
 		return (B_TRUE);
 	}
 
@@ -3964,6 +3957,26 @@ raidz_reflow_impl(vdev_t *vd, vdev_raidz_expand_t *vre, range_tree_t *rt,
 	 * by raidz_reflow_write_done().
 	 */
 	spa_config_enter(spa, SCL_STATE, spa, RW_READER);
+
+	/* check if a replacing vdev was added, if so treat it as an error */
+	if (vdev_raidz_expand_child_replacing(vd)) {
+		zfs_dbgmsg("replacing vdev encountered, reflow paused at "
+		    "offset=%llu txg=%llu",
+		    (long long)rra->rra_lr->lr_offset,
+		    (long long)rra->rra_txg);
+
+		mutex_enter(&vre->vre_lock);
+		vre->vre_failed_offset =
+		    MIN(vre->vre_failed_offset, rra->rra_lr->lr_offset);
+		cv_signal(&vre->vre_cv);
+		mutex_exit(&vre->vre_lock);
+
+		/* drop everything we acquired */
+		zfs_rangelock_exit(rra->rra_lr);
+		kmem_free(rra, sizeof (*rra));
+		spa_config_exit(spa, SCL_STATE, spa);
+		return (B_TRUE);
+	}
 
 	zio_t *pio = spa->spa_txg_zio[txgoff];
 	abd_t *abd = abd_alloc_for_io(length, B_FALSE);
@@ -4369,17 +4382,6 @@ vdev_raidz_reflow_copy_scratch(spa_t *spa)
 }
 
 static boolean_t
-vdev_raidz_expand_child_replacing(vdev_t *raidz_vd)
-{
-	for (int i = 0; i < raidz_vd->vdev_children; i++) {
-		/* Quick check if a child is being replaced */
-		if (!raidz_vd->vdev_child[i]->vdev_ops->vdev_op_leaf)
-			return (B_TRUE);
-	}
-	return (B_FALSE);
-}
-
-static boolean_t
 spa_raidz_expand_thread_check(void *arg, zthr_t *zthr)
 {
 	(void) zthr;
@@ -4429,8 +4431,7 @@ spa_raidz_expand_thread(void *arg, zthr_t *zthr)
 	for (uint64_t i = vre->vre_offset >> raidvd->vdev_ms_shift;
 	    i < raidvd->vdev_ms_count &&
 	    !zthr_iscancelled(zthr) &&
-	    vre->vre_failed_offset == UINT64_MAX &&
-	    !vre->vre_waiting_for_resilver; i++) {
+	    vre->vre_failed_offset == UINT64_MAX; i++) {
 		metaslab_t *msp = raidvd->vdev_ms[i];
 
 		metaslab_disable(msp);
@@ -4529,16 +4530,6 @@ spa_raidz_expand_thread(void *arg, zthr_t *zthr)
 			spa_config_enter(spa, SCL_CONFIG, FTAG, RW_READER);
 			raidvd = vdev_lookup_top(spa, vre->vre_vdev_id);
 
-			if (!vre->vre_waiting_for_resilver &&
-			    vdev_raidz_expand_child_replacing(raidvd)) {
-				mutex_enter(&vre->vre_lock);
-				vdev_dbgmsg(raidvd, "pausing raidz expansion "
-				    "during vdev replace");
-				vre->vre_waiting_for_resilver = B_TRUE;
-				zthr_wakeup(spa->spa_raidz_expand_zthr);
-				mutex_exit(&vre->vre_lock);
-			}
-
 			boolean_t needsync =
 			    raidz_reflow_impl(raidvd, vre, rt, tx);
 
@@ -4585,7 +4576,6 @@ spa_raidz_expand_thread(void *arg, zthr_t *zthr)
 		 * complete. In that case also mark it as completed on disk.
 		 */
 		ASSERT3U(vre->vre_failed_offset, ==, UINT64_MAX);
-		ASSERT0(vre->vre_waiting_for_resilver);
 		VERIFY0(dsl_sync_task(spa_name(spa), NULL,
 		    raidz_reflow_complete_sync, spa,
 		    0, ZFS_SPACE_CHECK_NONE));
@@ -4628,7 +4618,12 @@ raidz_dtl_reassessed(vdev_t *vd)
 	spa_t *spa = vd->vdev_spa;
 	if (spa->spa_raidz_expand != NULL) {
 		vdev_raidz_expand_t *vre = spa->spa_raidz_expand;
-		if (vd->vdev_top->vdev_id == vre->vre_vdev_id) {
+		/*
+		 * we get called often from vdev_dtl_reassess() so make
+		 * sure it's our vdev and any replacing is complete
+		 */
+		if (vd->vdev_top->vdev_id == vre->vre_vdev_id &&
+		    !vdev_raidz_expand_child_replacing(vd->vdev_top)) {
 			mutex_enter(&vre->vre_lock);
 			if (vre->vre_waiting_for_resilver) {
 				vdev_dbgmsg(vd, "DTL reassessed, "
