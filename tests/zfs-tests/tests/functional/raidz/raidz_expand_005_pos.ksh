@@ -51,17 +51,20 @@ typeset -r dev_size_mb=128
 typeset -a disks
 
 embedded_slog_min_ms=$(get_tunable EMBEDDED_SLOG_MIN_MS)
+original_scrub_after_expand=$(get_tunable SCRUB_AFTER_EXPAND)
 
 function cleanup
 {
+	poolexists "$TESTPOOL" && zpool status -v "$TESTPOOL"
 	poolexists "$TESTPOOL" && log_must_busy zpool destroy "$TESTPOOL"
 
 	for i in {0..$devs}; do
 		log_must rm -f "$TEST_BASE_DIR/dev-$i"
 	done
 
-	log_must set_tunable32 PREFETCH_DISABLE $embedded_slog_min_ms
+	log_must set_tunable32 EMBEDDED_SLOG_MIN_MS $embedded_slog_min_ms
 	log_must set_tunable64 RAIDZ_EXPAND_MAX_REFLOW_BYTES 0
+	log_must set_tunable32 SCRUB_AFTER_EXPAND $original_scrub_after_expand
 }
 
 function wait_expand_paused
@@ -109,9 +112,8 @@ function test_replace # <pool> <devices> <parity>
 	log_must zpool clear $pool
 	log_must zpool scrub -w $pool
 
-	# XXX step sometimes FAILED
 	log_must zpool status -v
-	# log_must check_pool_status $pool "scan" "repaired 0B"
+	log_must check_pool_status $pool "scan" "repaired 0B"
 }
 
 log_must set_tunable32 EMBEDDED_SLOG_MIN_MS 99999
@@ -129,6 +131,8 @@ pool=$TESTPOOL
 opts="-o cachefile=none"
 devices=""
 
+log_must set_tunable32 SCRUB_AFTER_EXPAND 0
+
 log_must zpool create -f $opts $pool $raid ${disks[1..$(($nparity+1))]}
 devices="${disks[1..$(($nparity+1))]}"
 
@@ -140,8 +144,8 @@ log_must fill_fs /$pool/fs2 1 128 100 1024 R
 
 for disk in ${disks[$(($nparity+2))..$devs]}; do
 	# Set pause to some random value near halfway point
-	pool_size=$(get_pool_prop size $pool)
-	pause=$((((RANDOM << 15) + RANDOM) % pool_size / 2))
+	reflow_size=$(get_pool_prop allocated $pool)
+	pause=$((((RANDOM << 15) + RANDOM) % reflow_size / 2))
 	log_must set_tunable64 RAIDZ_EXPAND_MAX_REFLOW_BYTES $pause
 
 	log_must zpool attach $pool ${raid}-0 $disk
@@ -154,7 +158,7 @@ for disk in ${disks[$(($nparity+2))..$devs]}; do
 
 		# Increase pause by about 25%
 		pause=$((pause + (((RANDOM << 15) + RANDOM) % \
-		    pool_size) / 4))
+		    reflow_size) / 4))
 		log_must set_tunable64 RAIDZ_EXPAND_MAX_REFLOW_BYTES $pause
 
 		wait_expand_paused

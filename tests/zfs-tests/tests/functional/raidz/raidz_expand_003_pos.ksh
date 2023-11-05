@@ -42,7 +42,7 @@
 #	    - set reflow bytes to max value to complete the expansion
 
 typeset -r devs=10
-typeset -r dev_size_mb=128
+typeset -r dev_size_mb=256
 
 typeset -a disks
 
@@ -50,6 +50,7 @@ embedded_slog_min_ms=$(get_tunable EMBEDDED_SLOG_MIN_MS)
 
 function cleanup
 {
+	poolexists "$TESTPOOL" && zpool status -v "$TESTPOOL"
 	poolexists "$TESTPOOL" && log_must_busy zpool destroy "$TESTPOOL"
 
 	for i in {0..$devs}; do
@@ -93,22 +94,27 @@ opts="-o cachefile=none"
 log_must zpool create -f $opts $pool $raid ${disks[1..$(($nparity+1))]}
 
 log_must zfs create -o recordsize=8k $pool/fs
-log_must fill_fs /$pool/fs 1 128 100 1024 R
+log_must fill_fs /$pool/fs 1 256 100 1024 R
 
 log_must zfs create -o recordsize=128k $pool/fs2
-log_must fill_fs /$pool/fs2 1 128 100 1024 R
+log_must fill_fs /$pool/fs2 1 256 100 1024 R
 
 for disk in ${disks[$(($nparity+2))..$devs]}; do
-	pool_size=$(get_pool_prop size $pool)
-	# Pause at random location near the end of vdev
-	pause=$((((RANDOM << 15) + RANDOM) % pool_size))
-	log_must set_tunable64 RAIDZ_EXPAND_MAX_REFLOW_BYTES $pause
-
-	log_bkgrnd randwritecomp /$pool/fs/file
+	log_must mkfile -n 400m /$pool/fs/file
+	log_bkgrnd randwritecomp /$pool/fs/file 250
 	pid0=$!
 
-	log_bkgrnd randwritecomp /$pool/fs2/file
+	# start some random writes in the background during expansion
+	log_must mkfile -n 400m /$pool/fs2/file2
+	log_bkgrnd randwritecomp /$pool/fs2/file2 250
 	pid1=$!
+	sleep 10
+
+	# Pause at half total bytes to be copied for expansion
+	reflow_size=$(get_pool_prop allocated $pool)
+	log_note need to reflow $reflow_size bytes
+	pause=$((reflow_size/2))
+	log_must set_tunable64 RAIDZ_EXPAND_MAX_REFLOW_BYTES $pause
 
 	log_must zpool attach $pool ${raid}-0 $disk
 	wait_expand_paused

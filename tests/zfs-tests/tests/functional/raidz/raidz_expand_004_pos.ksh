@@ -46,6 +46,7 @@ typeset -r dev_size_mb=128
 typeset -a disks
 
 embedded_slog_min_ms=$(get_tunable EMBEDDED_SLOG_MIN_MS)
+original_scrub_after_expand=$(get_tunable SCRUB_AFTER_EXPAND)
 
 function cleanup
 {
@@ -55,7 +56,8 @@ function cleanup
 		log_must rm -f "$TEST_BASE_DIR/dev-$i"
 	done
 
-	log_must set_tunable32 PREFETCH_DISABLE $embedded_slog_min_ms
+	log_must set_tunable32 EMBEDDED_SLOG_MIN_MS $embedded_slog_min_ms
+	log_must set_tunable32 SCRUB_AFTER_EXPAND $original_scrub_after_expand
 }
 
 log_onexit cleanup
@@ -73,6 +75,8 @@ nparity=$((RANDOM%(3) + 1))
 raid=raidz$nparity
 pool=$TESTPOOL
 opts="-o cachefile=none"
+
+log_must set_tunable32 SCRUB_AFTER_EXPAND 0
 
 log_must zpool create -f $opts $pool $raid ${disks[1..$(($nparity+1))]}
 

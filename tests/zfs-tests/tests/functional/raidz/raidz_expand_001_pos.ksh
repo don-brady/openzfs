@@ -138,8 +138,8 @@ function test_scrub # <pool> <parity> <dir>
 	typeset dir=$3
 	typeset combrec=$4
 
-	randbyte=$(( ((RANDOM<<15) + RANDOM) % \
-		(dev_size_mb * (devs-1) * 1024 * 1024) ))
+	reflow_size=$(get_pool_prop allocated $pool)
+	randbyte=$(( ((RANDOM<<15) + RANDOM) % $reflow_size ))
 	log_must set_tunable64 RAIDZ_EXPAND_MAX_REFLOW_BYTES $randbyte
 	log_must zpool attach $TESTPOOL ${raid}-0 $dir/dev-$devs
 	wait_expand_paused
