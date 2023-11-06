@@ -3575,6 +3575,7 @@ zpool_vdev_attach(zpool_handle_t *zhp, const char *old_disk,
 			zfs_error_aux(hdl, dgettext(TEXT_DOMAIN,
 			    "the reserved boot area needed for the expansion "
 			    "is already being used by a boot loader"));
+			(void) zfs_error(hdl, EZFS_BADDEV, errbuf);
 		} else {
 			(void) zpool_standard_error(hdl, errno, errbuf);
 		}
