@@ -769,6 +769,14 @@ exit:
 	VERIFY(free_slots <= max_free_slots);
 	while (free_slots < max_free_slots) {
 		(void) cv_wait(&sem_cv, &sem_mtx);
+
+		/* check if should stop the test (timeout) */
+		time_diff = (gethrtime() - start_time) / NANOSEC
+		if (rto_opts.rto_sweep_timeout > 0 &&
+		    time_diff >= rto_opts.rto_sweep_timeout) {
+			sweep_state = SWEEP_TIMEOUT;
+			rto_opts.rto_should_stop = B_TRUE;
+		}
 	}
 	mutex_exit(&sem_mtx);
 
