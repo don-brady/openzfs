@@ -3055,6 +3055,7 @@ spa_load(spa_t *spa, spa_load_state_t state, spa_import_type_t type)
 	spa->spa_load_state = state;
 	(void) spa_import_progress_set_state(spa_guid(spa),
 	    spa_load_state(spa));
+	spa_import_progress_set_notes(spa_guid(spa), "spa_load()");
 
 	gethrestime(&spa->spa_loaded_ts);
 	error = spa_load_impl(spa, type, &ereport);
@@ -4935,6 +4936,7 @@ spa_load_impl(spa_t *spa, spa_import_type_t type, const char **ereport)
 	/*
 	 * Retrieve the checkpoint txg if the pool has a checkpoint.
 	 */
+	spa_import_progress_set_notes(spa_guid(spa), "Loading checkpoint txg");
 	error = spa_ld_read_checkpoint_txg(spa);
 	if (error != 0)
 		return (error);
@@ -4947,6 +4949,8 @@ spa_load_impl(spa_t *spa, spa_import_type_t type, const char **ereport)
 	 * initiated. Otherwise we could be reading from indirect vdevs before
 	 * we have loaded their mappings.
 	 */
+	spa_import_progress_set_notes(spa_guid(spa),
+	    "Loading indirect vdev metadata");
 	error = spa_ld_open_indirect_vdev_metadata(spa);
 	if (error != 0)
 		return (error);
@@ -4955,6 +4959,7 @@ spa_load_impl(spa_t *spa, spa_import_type_t type, const char **ereport)
 	 * Retrieve the full list of active features from the MOS and check if
 	 * they are all supported.
 	 */
+	spa_import_progress_set_notes(spa_guid(spa), "Checking feature flags");
 	error = spa_ld_check_features(spa, &missing_feat_write);
 	if (error != 0)
 		return (error);
@@ -4963,6 +4968,8 @@ spa_load_impl(spa_t *spa, spa_import_type_t type, const char **ereport)
 	 * Load several special directories from the MOS needed by the dsl_pool
 	 * layer.
 	 */
+	spa_import_progress_set_notes(spa_guid(spa),
+	    "Loading special MOS directories");
 	error = spa_ld_load_special_directories(spa);
 	if (error != 0)
 		return (error);
@@ -4970,6 +4977,7 @@ spa_load_impl(spa_t *spa, spa_import_type_t type, const char **ereport)
 	/*
 	 * Retrieve pool properties from the MOS.
 	 */
+	spa_import_progress_set_notes(spa_guid(spa), "Loading properties");
 	error = spa_ld_get_props(spa);
 	if (error != 0)
 		return (error);
@@ -4978,6 +4986,7 @@ spa_load_impl(spa_t *spa, spa_import_type_t type, const char **ereport)
 	 * Retrieve the list of auxiliary devices - cache devices and spares -
 	 * and open them.
 	 */
+	spa_import_progress_set_notes(spa_guid(spa), "Loading AUX vdevs");
 	error = spa_ld_open_aux_vdevs(spa, type);
 	if (error != 0)
 		return (error);
@@ -4986,14 +4995,17 @@ spa_load_impl(spa_t *spa, spa_import_type_t type, const char **ereport)
 	 * Load the metadata for all vdevs. Also check if unopenable devices
 	 * should be autoreplaced.
 	 */
+	spa_import_progress_set_notes(spa_guid(spa), "Loading vdev metadata");
 	error = spa_ld_load_vdev_metadata(spa);
 	if (error != 0)
 		return (error);
 
+	spa_import_progress_set_notes(spa_guid(spa), "Loading dedup tables");
 	error = spa_ld_load_dedup_tables(spa);
 	if (error != 0)
 		return (error);
 
+	spa_import_progress_set_notes(spa_guid(spa), "Loading BRT");
 	error = spa_ld_load_brt(spa);
 	if (error != 0)
 		return (error);
@@ -5002,6 +5014,7 @@ spa_load_impl(spa_t *spa, spa_import_type_t type, const char **ereport)
 	 * Verify the logs now to make sure we don't have any unexpected errors
 	 * when we claim log blocks later.
 	 */
+	spa_import_progress_set_notes(spa_guid(spa), "Verifying Log Devices");
 	error = spa_ld_verify_logs(spa, type, ereport);
 	if (error != 0)
 		return (error);
@@ -5023,6 +5036,7 @@ spa_load_impl(spa_t *spa, spa_import_type_t type, const char **ereport)
 	 * state. When performing an extreme rewind, we verify the whole pool,
 	 * which can take a very long time.
 	 */
+	spa_import_progress_set_notes(spa_guid(spa), "Verifying pool data");
 	error = spa_ld_verify_pool_data(spa);
 	if (error != 0)
 		return (error);
@@ -5032,6 +5046,8 @@ spa_load_impl(spa_t *spa, spa_import_type_t type, const char **ereport)
 	 * we write anything to the pool because we'd need to update the space
 	 * accounting using the deflated sizes.
 	 */
+	spa_import_progress_set_notes(spa_guid(spa),
+	    "Calculating deflated space");
 	spa_update_dspace(spa);
 
 	/*
@@ -5039,6 +5055,7 @@ spa_load_impl(spa_t *spa, spa_import_type_t type, const char **ereport)
 	 * pool. If we are importing the pool in read-write mode, a few
 	 * additional steps must be performed to finish the import.
 	 */
+	spa_import_progress_set_notes(spa_guid(spa), "Starting import");
 	if (spa_writeable(spa) && (spa->spa_load_state == SPA_LOAD_RECOVER ||
 	    spa->spa_load_max_txg == UINT64_MAX)) {
 		uint64_t config_cache_txg = spa->spa_config_txg;
@@ -5055,6 +5072,8 @@ spa_load_impl(spa_t *spa, spa_import_type_t type, const char **ereport)
 			    (u_longlong_t)spa->spa_uberblock.ub_checkpoint_txg);
 		}
 
+		spa_import_progress_set_notes(spa_guid(spa),
+		    "Claiming ZIL blocks");
 		/*
 		 * Traverse the ZIL and claim all blocks.
 		 */
@@ -5074,6 +5093,8 @@ spa_load_impl(spa_t *spa, spa_import_type_t type, const char **ereport)
 		 * will have been set for us by ZIL traversal operations
 		 * performed above.
 		 */
+		spa_import_progress_set_notes(spa_guid(spa),
+		    "Syncing ZIL claims");
 		txg_wait_synced(spa->spa_dsl_pool, spa->spa_claim_max_txg);
 
 		/*
@@ -5081,6 +5102,8 @@ spa_load_impl(spa_t *spa, spa_import_type_t type, const char **ereport)
 		 * next sync, we would update the config stored in vdev labels
 		 * and the cachefile (by default /etc/zfs/zpool.cache).
 		 */
+		spa_import_progress_set_notes(spa_guid(spa),
+		    "Updating configs");
 		spa_ld_check_for_config_update(spa, config_cache_txg,
 		    update_config_cache);
 
@@ -5089,6 +5112,8 @@ spa_load_impl(spa_t *spa, spa_import_type_t type, const char **ereport)
 		 * Then check all DTLs to see if anything needs resilvering.
 		 * The resilver will be deferred if a rebuild was started.
 		 */
+		spa_import_progress_set_notes(spa_guid(spa),
+		    "Starting resilvers");
 		if (vdev_rebuild_active(spa->spa_root_vdev)) {
 			vdev_rebuild_restart(spa);
 		} else if (!dsl_scan_resilvering(spa->spa_dsl_pool) &&
@@ -5102,6 +5127,8 @@ spa_load_impl(spa_t *spa, spa_import_type_t type, const char **ereport)
 		 */
 		spa_history_log_version(spa, "open", NULL);
 
+		spa_import_progress_set_notes(spa_guid(spa),
+		    "Restarting device removals");
 		spa_restart_removal(spa);
 		spa_spawn_aux_threads(spa);
 
@@ -5114,19 +5141,29 @@ spa_load_impl(spa_t *spa, spa_import_type_t type, const char **ereport)
 		 * auxiliary threads above (from which the livelist
 		 * deletion zthr is part of).
 		 */
+		spa_import_progress_set_notes(spa_guid(spa),
+		    "Cleaning up inconsistent objsets");
 		(void) dmu_objset_find(spa_name(spa),
 		    dsl_destroy_inconsistent, NULL, DS_FIND_CHILDREN);
 
 		/*
 		 * Clean up any stale temporary dataset userrefs.
 		 */
+		spa_import_progress_set_notes(spa_guid(spa),
+		    "Cleaning up temporary uerrefs");
 		dsl_pool_clean_tmp_userrefs(spa->spa_dsl_pool);
 
 		spa_config_enter(spa, SCL_CONFIG, FTAG, RW_READER);
+		spa_import_progress_set_notes(spa_guid(spa),
+		    "Restarting Initialize");
 		vdev_initialize_restart(spa->spa_root_vdev);
+		spa_import_progress_set_notes(spa_guid(spa),
+		    "Restarting TRIM");
 		vdev_trim_restart(spa->spa_root_vdev);
 		vdev_autotrim_restart(spa);
 		spa_config_exit(spa, SCL_CONFIG, FTAG);
+		spa_import_progress_set_notes(spa_guid(spa),
+		    "Finished importing");
 	}
 
 	spa_import_progress_remove(spa_guid(spa));
