@@ -6599,7 +6599,7 @@ spa_export_common(const char *pool, int new_state, nvlist_t **oldconfig,
 	 */
 	if (!force_removal && spa->spa_sync_on) {
 		error = txg_wait_synced_tx(spa->spa_dsl_pool, 0,
-		    NULL, TXG_WAIT_F_NOSUSPEND);
+		    NULL, TXG_WAIT_F_NOSUSPEND | TXG_WAIT_F_SIGNAL);
 		if (error != 0)
 			goto fail;
 		spa_evicting_os_wait(spa);
