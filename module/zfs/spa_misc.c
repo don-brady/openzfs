@@ -235,9 +235,9 @@
  * locking is, always, based on spa_namespace_lock and spa_config_lock[].
  */
 
-static avl_tree_t spa_namespace_avl;
+avl_tree_t spa_namespace_avl;
 kmutex_t spa_namespace_lock;
-static kcondvar_t spa_namespace_cv;
+kcondvar_t spa_namespace_cv;
 static const int spa_max_replication_override = SPA_DVAS_PER_BP;
 
 static kmutex_t spa_spare_lock;
@@ -619,6 +619,7 @@ spa_lookup(const char *name)
 
 	ASSERT(MUTEX_HELD(&spa_namespace_lock));
 
+retry:
 	(void) strlcpy(search.spa_name, name, sizeof (search.spa_name));
 
 	/*
@@ -630,6 +631,14 @@ spa_lookup(const char *name)
 		*cp = '\0';
 
 	spa = avl_find(&spa_namespace_avl, &search, &where);
+	if (spa == NULL)
+		return (NULL);
+
+	if (spa->spa_load_thread != NULL &&
+	    spa->spa_load_thread != curthread) {
+		cv_wait(&spa_namespace_cv, &spa_namespace_lock);
+		goto retry;
+	}
 
 	return (spa);
 }
@@ -728,6 +737,7 @@ spa_add(const char *name, nvlist_t *config, const char *altroot)
 	spa_config_lock_init(spa);
 	spa_stats_init(spa);
 
+	ASSERT(MUTEX_HELD(&spa_namespace_lock));
 	avl_add(&spa_namespace_avl, spa);
 
 	/*
@@ -826,7 +836,6 @@ spa_remove(spa_t *spa)
 	nvlist_free(spa->spa_config_splitting);
 
 	avl_remove(&spa_namespace_avl, spa);
-	cv_broadcast(&spa_namespace_cv);
 
 	if (spa->spa_root)
 		spa_strfree(spa->spa_root);
@@ -920,7 +929,8 @@ void
 spa_open_ref(spa_t *spa, const void *tag)
 {
 	ASSERT(zfs_refcount_count(&spa->spa_refcount) >= spa->spa_minref ||
-	    MUTEX_HELD(&spa_namespace_lock));
+	    MUTEX_HELD(&spa_namespace_lock) ||
+	    spa->spa_load_thread == curthread);
 	(void) zfs_refcount_add(&spa->spa_refcount, tag);
 }
 
@@ -932,7 +942,8 @@ void
 spa_close(spa_t *spa, const void *tag)
 {
 	ASSERT(zfs_refcount_count(&spa->spa_refcount) > spa->spa_minref ||
-	    MUTEX_HELD(&spa_namespace_lock));
+	    MUTEX_HELD(&spa_namespace_lock) ||
+	    spa->spa_load_thread == curthread);
 	(void) zfs_refcount_remove(&spa->spa_refcount, tag);
 }
 

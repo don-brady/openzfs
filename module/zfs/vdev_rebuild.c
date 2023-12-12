@@ -1071,7 +1071,8 @@ vdev_rebuild_restart_impl(vdev_t *vd)
 void
 vdev_rebuild_restart(spa_t *spa)
 {
-	ASSERT(MUTEX_HELD(&spa_namespace_lock));
+	ASSERT(MUTEX_HELD(&spa_namespace_lock) ||
+	    spa->spa_load_thread == curthread);
 
 	vdev_rebuild_restart_impl(spa->spa_root_vdev);
 }
