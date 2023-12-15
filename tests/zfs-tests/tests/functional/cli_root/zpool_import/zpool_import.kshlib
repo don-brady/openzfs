@@ -346,3 +346,40 @@ function get_last_txg_synced
 
 	zdb -u $pool | awk '$1 == "txg" { print $3 }' | sort -n | tail -n 1
 }
+
+#
+# create a pool and export it with dirty zil data
+#
+function create_dirty_exported_pool
+{
+	typeset pool=$1
+	typeset vdev=$2
+
+	log_must zpool create $pool $vdev
+	log_must zfs create -o recordsize=8k $pool/fs
+
+	#
+	# This dd command works around an issue where ZIL records aren't created
+	# after freezing the pool unless a ZIL header already exists. Create a file
+	# synchronously to force ZFS to write one out.
+	#
+	log_must dd if=/dev/zero of=/$pool/fs/sync conv=fsync bs=1 count=1
+
+	#
+	# Freeze the pool to retain the intent log records
+	#
+	log_must zpool freeze $pool
+
+	# fill_fs [destdir] [dirnum] [filenum] [bytes] [num_writes] [data]
+	log_must fill_fs /$pool/fs 1 750 100 1000 Z
+
+	log_must zpool list -v $pool
+
+	#
+	# Unmount filesystem and export the pool
+	#
+	# The zfs intent logs contain records to replay.
+	#
+	log_must zfs unmount /$pool/fs
+	log_must zpool export $pool
+}

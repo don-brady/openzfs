@@ -78,46 +78,14 @@ log_onexit cleanup
 log_must set_tunable64 KEEP_LOG_SPACEMAPS_AT_EXPORT 1
 log_must set_tunable64 METASLAB_DEBUG_LOAD 1
 
-function create_dirty_pool
-{
-	typeset pool=$1
-	typeset vdev=$2
-
-	log_must zpool create $pool $vdev
-	log_must zfs create -o recordsize=8k $pool/fs
-
-	#
-	# This dd command works around an issue where ZIL records aren't created
-	# after freezing the pool unless a ZIL header already exists. Create a file
-	# synchronously to force ZFS to write one out.
-	#
-	log_must dd if=/dev/zero of=/$pool/fs/sync conv=fsync bs=1 count=1
-
-	#
-	# Freeze the pool to retain the intent log records
-	#
-	log_must zpool freeze $pool
-
-	# fill_fs [destdir] [dirnum] [filenum] [bytes] [num_writes] [data]
-	log_must fill_fs /$pool/fs 1 750 100 1000 Z
-
-	log_must zpool list -v $pool
-
-	#
-	# Unmount filesystem and export the pool
-	#
-	# The zfs intent logs contain records to replay.
-	#
-	log_must zfs unmount /$pool/fs
-	log_must zpool export $pool
-}
 
 #
 # create some dirty (non-empty ZIL) exported pools
 #
 SECONDS=0
 for i in {0..$(($MAX_NUM - 1))}; do
-	log_must create_dirty_pool $POOLNAME-$i $DEVICE_DIR/${DEVICE_FILE}$i &
+	log_must create_dirty_exported_pool \
+	    $POOLNAME-$i $DEVICE_DIR/${DEVICE_FILE}$i &
 done
 wait
 log_note "created $MAX_NUM dirty pools in $SECONDS seconds"
