@@ -6497,8 +6497,8 @@ spa_tryimport(nvlist_t *tryconfig)
 	 * Create and initialize the spa structure.
 	 */
 	char *name = kmem_alloc(MAXPATHLEN, KM_SLEEP);
-	(void) snprintf(name, MAXPATHLEN, "%s-%s-%llx",
-	    TRYIMPORT_NAME, poolname, (u_longlong_t)curthread);
+	(void) snprintf(name, MAXPATHLEN, "%s-%llx-%s",
+	    TRYIMPORT_NAME, (u_longlong_t)curthread, poolname);
 
 	mutex_enter(&spa_namespace_lock);
 	spa = spa_add(name, tryconfig, NULL);
