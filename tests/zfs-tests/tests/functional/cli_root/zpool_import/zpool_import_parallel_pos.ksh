@@ -36,7 +36,6 @@
 # test uses 8 vdevs
 export MAX_NUM=8
 
-
 #
 # DESCRIPTION:
 # 	Verify that pool imports can occur in parallel
@@ -47,6 +46,8 @@ export MAX_NUM=8
 #	3. Export the pools
 #	4. Import half of the pools synchronously to baseline sequential cost
 #	5. Import the other half asynchronously to demonstrate parallel savings
+#	6. Export 4 pools
+#	7. Test zpool import -a
 #
 
 verify_runnable "global"
@@ -61,13 +62,15 @@ POOLNAME="import_pool"
 
 function cleanup
 {
+	zinject -c all
 	log_must set_tunable64 KEEP_LOG_SPACEMAPS_AT_EXPORT 0
 	log_must set_tunable64 METASLAB_DEBUG_LOAD 0
 
 	for i in {0..$(($MAX_NUM - 1))}; do
 		destroy_pool $POOLNAME-$i
 	done
-	# restore the device sizes
+	# reset the devices
+	increase_device_sizes 0
 	increase_device_sizes $FILE_SIZE
 }
 
@@ -78,49 +81,16 @@ log_onexit cleanup
 log_must set_tunable64 KEEP_LOG_SPACEMAPS_AT_EXPORT 1
 log_must set_tunable64 METASLAB_DEBUG_LOAD 1
 
-function create_dirty_pool
-{
-	typeset pool=$1
-	typeset vdev=$2
-
-	log_must zpool create $pool $vdev
-	log_must zfs create -o recordsize=8k $pool/fs
-
-	#
-	# This dd command works around an issue where ZIL records aren't created
-	# after freezing the pool unless a ZIL header already exists. Create a file
-	# synchronously to force ZFS to write one out.
-	#
-	log_must dd if=/dev/zero of=/$pool/fs/sync conv=fsync bs=1 count=1
-
-	#
-	# Freeze the pool to retain the intent log records
-	#
-	log_must zpool freeze $pool
-
-	# fill_fs [destdir] [dirnum] [filenum] [bytes] [num_writes] [data]
-	log_must fill_fs /$pool/fs 1 750 100 1000 Z
-
-	log_must zpool list -v $pool
-
-	#
-	# Unmount filesystem and export the pool
-	#
-	# The zfs intent logs contain records to replay.
-	#
-	log_must zfs unmount /$pool/fs
-	log_must zpool export $pool
-}
 
 #
-# create some dirty (non-empty ZIL) exported pools
+# create some exported pools with import delay injectors
 #
-SECONDS=0
 for i in {0..$(($MAX_NUM - 1))}; do
-	log_must create_dirty_pool $POOLNAME-$i $DEVICE_DIR/${DEVICE_FILE}$i &
+	log_must zpool create $POOLNAME-$i $DEVICE_DIR/${DEVICE_FILE}$i
+	log_must zpool export $POOLNAME-$i
+	log_must zinject -P import -s 12 $POOLNAME-$i
 done
 wait
-log_note "created $MAX_NUM dirty pools in $SECONDS seconds"
 
 #
 # import half of the pools synchronously
@@ -140,6 +110,25 @@ for i in {4..7}; do
 	log_must zpool import -d $DEVICE_DIR -f $POOLNAME-$i &
 done
 wait
+parallel_time=$SECONDS
+log_note "asyncronously imported 4 pools in $parallel_time seconds"
+
+log_must test $parallel_time -lt $(($sequential_time / 3))
+
+#
+# export pools with import delay injectors
+#
+for i in {4..7}; do
+	log_must zpool export $POOLNAME-$i
+	log_must zinject -P import -s 12 $POOLNAME-$i
+done
+wait
+
+#
+# now test zpool import -a
+#
+SECONDS=0
+log_must zpool import -a -d $DEVICE_DIR -f
 parallel_time=$SECONDS
 log_note "asyncronously imported 4 pools in $parallel_time seconds"
 

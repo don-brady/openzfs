@@ -237,7 +237,7 @@ struct spa {
 	dsl_pool_t	*spa_dsl_pool;
 	boolean_t	spa_is_initializing;	/* true while opening pool */
 	boolean_t	spa_is_exporting;	/* true while exporting pool */
-	kthread_t	*spa_load_thread;	/* set when namespace lock is not held and loading */
+	kthread_t	*spa_load_thread;	/* loading, no namespace lock */
 	metaslab_class_t *spa_normal_class;	/* normal data class */
 	metaslab_class_t *spa_log_class;	/* intent log data class */
 	metaslab_class_t *spa_embedded_log_class; /* log on normal vdevs */
