@@ -1722,7 +1722,8 @@ spa_destroy_aux_threads(spa_t *spa)
 static void
 spa_unload(spa_t *spa)
 {
-	ASSERT(MUTEX_HELD(&spa_namespace_lock));
+	ASSERT(MUTEX_HELD(&spa_namespace_lock) ||
+	    spa->spa_load_thread == curthread);
 	ASSERT(spa_state(spa) != POOL_STATE_UNINITIALIZED);
 
 	spa_import_progress_remove(spa_guid(spa));
@@ -4737,7 +4738,8 @@ spa_ld_mos_init(spa_t *spa, spa_import_type_t type)
 {
 	int error = 0;
 
-	ASSERT(MUTEX_HELD(&spa_namespace_lock));
+	ASSERT(MUTEX_HELD(&spa_namespace_lock) ||
+	    spa->spa_load_thread == curthread);
 	ASSERT(spa->spa_config_source != SPA_CONFIG_SRC_NONE);
 
 	/*
@@ -4969,9 +4971,6 @@ spa_load_impl(spa_t *spa, spa_import_type_t type, const char **ereport)
 	if (error != 0)
 		return (error);
 
-	spa->spa_load_thread = curthread;
-	mutex_exit(&spa_namespace_lock);
-
 	/*
 	 * If we are rewinding to the checkpoint then we need to repeat
 	 * everything we've done so far in this function but this time
@@ -4993,7 +4992,7 @@ spa_load_impl(spa_t *spa, spa_import_type_t type, const char **ereport)
 		 */
 		error = spa_ld_checkpoint_rewind(spa);
 		if (error != 0)
-			goto fail;
+			return (error);
 
 		/*
 		 * Redo the loading process again with the
@@ -5003,8 +5002,14 @@ spa_load_impl(spa_t *spa, spa_import_type_t type, const char **ereport)
 		spa_load_note(spa, "LOADING checkpointed uberblock");
 		error = spa_ld_mos_with_trusted_config(spa, type, NULL);
 		if (error != 0)
-			goto fail;
+			return (error);
 	}
+
+	/*
+	 * Namespace no longer needed past this point
+	 */
+	spa->spa_load_thread = curthread;
+	mutex_exit(&spa_namespace_lock);
 
 	/*
 	 * Retrieve the checkpoint txg if the pool has a checkpoint.
