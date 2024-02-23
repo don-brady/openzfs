@@ -82,7 +82,7 @@
  *		- Check if spa_refcount is zero
  *		- Rename a spa_t
  *		- add/remove/attach/detach devices
- *		- Held for the duration of create/destroy/import/export
+ *		- Held for the duration of create/destroy/export
  *
  *	It does not need to handle recursion.  A create or destroy may
  *	reference objects (files or zvols) in other pools, but by

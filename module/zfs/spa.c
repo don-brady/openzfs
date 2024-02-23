@@ -4959,6 +4959,7 @@ spa_load_impl(spa_t *spa, spa_import_type_t type, const char **ereport)
 	boolean_t checkpoint_rewind =
 	    (spa->spa_import_flags & ZFS_IMPORT_CHECKPOINT);
 	boolean_t update_config_cache = B_FALSE;
+	hrtime_t load_start = gethrtime();
 
 	ASSERT(MUTEX_HELD(&spa_namespace_lock));
 	ASSERT(spa->spa_config_source != SPA_CONFIG_SRC_NONE);
@@ -5236,6 +5237,7 @@ spa_load_impl(spa_t *spa, spa_import_type_t type, const char **ereport)
 		spa_config_exit(spa, SCL_CONFIG, FTAG);
 		spa_import_progress_set_notes(spa, "Finished importing");
 	}
+	zio_handle_import_delay(spa, gethrtime() - load_start);
 
 	spa_import_progress_remove(spa_guid(spa));
 	spa_async_request(spa, SPA_ASYNC_L2CACHE_REBUILD);
@@ -6497,7 +6499,8 @@ spa_tryimport(nvlist_t *tryconfig)
 	 * Create and initialize the spa structure.
 	 */
 	char *name = kmem_alloc(MAXPATHLEN, KM_SLEEP);
-	(void) snprintf(name, MAXPATHLEN, "%s%s", TRYIMPORT_NAME, poolname);
+	(void) snprintf(name, MAXPATHLEN, "%s-%llx-%s",
+	    TRYIMPORT_NAME, (u_longlong_t)curthread, poolname);
 
 	mutex_enter(&spa_namespace_lock);
 	spa = spa_add(name, tryconfig, NULL);
@@ -6617,6 +6620,7 @@ spa_export_common(const char *pool, int new_state, nvlist_t **oldconfig,
 {
 	int error;
 	spa_t *spa;
+	hrtime_t export_start = gethrtime();
 
 	if (oldconfig)
 		*oldconfig = NULL;
@@ -6760,6 +6764,9 @@ export_spa:
 		 */
 		spa->spa_is_exporting = B_FALSE;
 	}
+
+	if (new_state == POOL_STATE_EXPORTED)
+		zio_handle_export_delay(spa, gethrtime() - export_start);
 
 	mutex_exit(&spa_namespace_lock);
 	return (0);
