@@ -719,8 +719,8 @@ zio_handle_pool_delay(spa_t *spa, hrtime_t elapsed, zinject_type_t command)
 			    SEC2NSEC(handler->zi_record.zi_duration);
 			if (pause > elapsed) {
 				delay = pause - elapsed;
-				id = handler->zi_id;
 			}
+			id = handler->zi_id;
 			break;
 		}
 	}
@@ -733,6 +733,8 @@ zio_handle_pool_delay(spa_t *spa, hrtime_t elapsed, zinject_type_t command)
 			    "sec delay", (u_longlong_t)NSEC2SEC(delay));
 		}
 		zfs_sleep_until(gethrtime() + delay);
+	}
+	if (id) {
 		/* all done with this one-shot handler */
 		zio_clear_fault(id);
 	}
