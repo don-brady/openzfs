@@ -777,6 +777,23 @@ static buf_hash_table_t buf_hash_table;
 uint64_t zfs_crc64_table[256];
 
 /*
+ * Asynchronous ARC flush
+ *
+ * We track these in a list for arc_async_flush_guid_inuse().
+ * Used for both L1 and L2 async teardown.
+ */
+static list_t arc_async_flush_list;
+static kmutex_t	arc_async_flush_lock;
+
+typedef struct arc_async_flush {
+	uint64_t	af_spa_guid;
+	taskq_ent_t	af_tqent;
+	uint_t		af_cache_level;	/* 1 or 2 to differentiate node */
+	list_node_t	af_node;
+} arc_async_flush_t;
+
+
+/*
  * Level 2 ARC
  */
 
@@ -4423,19 +4440,52 @@ arc_flush(spa_t *spa, boolean_t retry)
 	arc_flush_impl(spa != NULL ? spa_load_guid(spa) : 0, retry);
 }
 
+static arc_async_flush_t *
+arc_async_flush_add(uint64_t spa_guid, uint_t level)
+{
+	arc_async_flush_t *af = kmem_alloc(sizeof (*af), KM_SLEEP);
+	af->af_spa_guid = spa_guid;
+	af->af_cache_level = level;
+	taskq_init_ent(&af->af_tqent);
+	list_link_init(&af->af_node);
+
+	mutex_enter(&arc_async_flush_lock);
+	list_insert_tail(&arc_async_flush_list, af);
+	mutex_exit(&arc_async_flush_lock);
+
+	return (af);
+}
+
+static void
+arc_async_flush_remove(uint64_t spa_guid, uint_t level)
+{
+	mutex_enter(&arc_async_flush_lock);
+	for (arc_async_flush_t *af = list_head(&arc_async_flush_list);
+	    af != NULL; af = list_next(&arc_async_flush_list, af)) {
+		if (af->af_spa_guid == spa_guid &&
+		    af->af_cache_level == level) {
+			list_remove(&arc_async_flush_list, af);
+			kmem_free(af, sizeof (*af));
+			break;
+		}
+	}
+	mutex_exit(&arc_async_flush_lock);
+}
+
 static void
 arc_flush_task(void *arg)
 {
-	uint64_t guid = *((uint64_t *)arg);
+	arc_async_flush_t *af = arg;
 	hrtime_t start_time = gethrtime();
+	uint64_t spa_guid = af->af_spa_guid;
 
-	arc_flush_impl(guid, B_FALSE);
-	kmem_free(arg, sizeof (uint64_t *));
+	arc_flush_impl(spa_guid, B_FALSE);
+	arc_async_flush_remove(spa_guid, af->af_cache_level);
 
 	uint64_t elaspsed = NSEC2MSEC(gethrtime() - start_time);
 	if (elaspsed > 0) {
 		zfs_dbgmsg("spa %llu arc flushed in %llu ms",
-		    (u_longlong_t)guid, (u_longlong_t)elaspsed);
+		    (u_longlong_t)spa_guid, (u_longlong_t)elaspsed);
 	}
 }
 
@@ -4452,15 +4502,36 @@ arc_flush_task(void *arg)
 void
 arc_flush_async(spa_t *spa)
 {
-	uint64_t *guidp = kmem_alloc(sizeof (uint64_t *), KM_SLEEP);
+	uint64_t spa_guid = spa_load_guid(spa);
+	arc_async_flush_t *af = arc_async_flush_add(spa_guid, 1);
 
-	*guidp = spa_load_guid(spa);
+	/*
+	 * Note that arc_flush_task() needs arc_async_flush_lock to remove af
+	 * list node.  So by holding the lock we avoid a race for af removal
+	 * with our use here.
+	 */
+	mutex_enter(&arc_async_flush_lock);
+	taskq_dispatch_ent(arc_flush_taskq, arc_flush_task,
+	    af, TQ_SLEEP, &af->af_tqent);
+	mutex_exit(&arc_async_flush_lock);
+}
 
-	if (taskq_dispatch(arc_flush_taskq, arc_flush_task, guidp,
-	    TQ_SLEEP) == TASKQID_INVALID) {
-		arc_flush_impl(*guidp, B_FALSE);
-		kmem_free(guidp, sizeof (uint64_t *));
+/*
+ * Check if a guid is still in-use as part of an async teardown task
+ */
+boolean_t
+arc_async_flush_guid_inuse(uint64_t spa_guid)
+{
+	mutex_enter(&arc_async_flush_lock);
+	for (arc_async_flush_t *af = list_head(&arc_async_flush_list);
+	    af != NULL; af = list_next(&arc_async_flush_list, af)) {
+		if (af->af_spa_guid == spa_guid) {
+			mutex_exit(&arc_async_flush_lock);
+			return (B_TRUE);
+		}
 	}
+	mutex_exit(&arc_async_flush_lock);
+	return (B_FALSE);
 }
 
 uint64_t
@@ -7801,6 +7872,9 @@ arc_init(void)
 	arc_prune_taskq = taskq_create("arc_prune", zfs_arc_prune_task_threads,
 	    defclsyspri, 100, INT_MAX, TASKQ_PREPOPULATE | TASKQ_DYNAMIC);
 
+	list_create(&arc_async_flush_list, sizeof (arc_async_flush_t),
+	    offsetof(arc_async_flush_t, af_node));
+	mutex_init(&arc_async_flush_lock, NULL, MUTEX_DEFAULT, NULL);
 	arc_flush_taskq = taskq_create("arc_flush", 75, defclsyspri,
 	    1, INT_MAX, TASKQ_DYNAMIC | TASKQ_THREADS_CPU_PCT);
 
@@ -7883,6 +7957,9 @@ arc_fini(void)
 
 	taskq_wait(arc_prune_taskq);
 	taskq_destroy(arc_prune_taskq);
+
+	list_destroy(&arc_async_flush_list);
+	mutex_destroy(&arc_async_flush_lock);
 
 	mutex_enter(&arc_prune_mtx);
 	while ((p = list_remove_head(&arc_prune_list)) != NULL) {
@@ -9795,6 +9872,8 @@ typedef struct {
 	l2arc_dev_t	*rva_l2arc_dev;
 	uint64_t	rva_spa_gid;
 	uint64_t	rva_vdev_gid;
+	boolean_t	rva_async;
+
 } remove_vdev_args_t;
 
 static void
@@ -9825,6 +9904,9 @@ l2arc_device_teardown(void *arg)
 		    (u_longlong_t)rva->rva_vdev_gid,
 		    (u_longlong_t)elaspsed);
 	}
+
+	if (rva->rva_async)
+		arc_async_flush_remove(rva->rva_spa_gid, 2);
 	kmem_free(rva, sizeof (remove_vdev_args_t));
 }
 
@@ -9850,7 +9932,7 @@ l2arc_remove_vdev(vdev_t *vd)
 	remove_vdev_args_t *rva = kmem_alloc(sizeof (remove_vdev_args_t),
 	    KM_SLEEP);
 	rva->rva_l2arc_dev = remdev;
-	rva->rva_spa_gid = spa_guid(remdev->l2ad_spa);
+	rva->rva_spa_gid = spa_load_guid(spa);
 	rva->rva_vdev_gid = remdev->l2ad_vdev->vdev_guid;
 
 	/*
@@ -9866,6 +9948,7 @@ l2arc_remove_vdev(vdev_t *vd)
 		asynchronous = B_FALSE;
 	}
 	mutex_exit(&l2arc_rebuild_thr_lock);
+	rva->rva_async = asynchronous;
 
 	/*
 	 * Remove device from global list
@@ -9883,13 +9966,17 @@ l2arc_remove_vdev(vdev_t *vd)
 	}
 	mutex_exit(&l2arc_dev_mtx);
 
-	/*
-	 * If possible, the teardown is completed asynchronously
-	 */
-	if (!asynchronous || taskq_dispatch(arc_flush_taskq,
-	    l2arc_device_teardown, rva, TQ_SLEEP) == TASKQID_INVALID) {
+	if (!asynchronous) {
 		l2arc_device_teardown(rva);
+		return;
 	}
+
+	arc_async_flush_t *af = arc_async_flush_add(rva->rva_spa_gid, 2);
+
+	mutex_enter(&arc_async_flush_lock);
+	taskq_dispatch_ent(arc_flush_taskq, l2arc_device_teardown, rva,
+	    TQ_SLEEP, &af->af_tqent);
+	mutex_exit(&arc_async_flush_lock);
 }
 
 void
