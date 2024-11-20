@@ -7374,6 +7374,13 @@ ztest_run_zdb(uint64_t guid)
 	char *set_gvars_args_joined = join_strings(set_gvars_args, " ");
 	free(set_gvars_args);
 
+	printf("%s -bcc%s%s -G -d -Y -e -y %s -p %s %"PRIu64,
+	    bin,
+	    ztest_opts.zo_verbose >= 3 ? "s" : "",
+	    ztest_opts.zo_verbose >= 4 ? "v" : "",
+	    set_gvars_args_joined,
+	    ztest_opts.zo_dir,
+	    guid);
 	size_t would = snprintf(zdb, len,
 	    "%s -bcc%s%s -G -d -Y -e -y %s -p %s %"PRIu64,
 	    bin,
@@ -7386,7 +7393,7 @@ ztest_run_zdb(uint64_t guid)
 
 	umem_free(set_gvars_args_joined, strlen(set_gvars_args_joined) + 1);
 
-	if (ztest_opts.zo_verbose >= 5)
+//	if (ztest_opts.zo_verbose >= 5)
 		(void) printf("Executing %s\n", zdb);
 
 	fp = popen(zdb, "r");

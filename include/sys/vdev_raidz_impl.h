@@ -104,6 +104,8 @@ typedef struct raidz_impl_ops {
 	char name[RAIDZ_IMPL_NAME_MAX];	/* Name of the implementation */
 } raidz_impl_ops_t;
 
+typedef struct raidz_row raidz_row_t;
+typedef struct raidz_col raidz_col_t;
 
 typedef struct raidz_col {
 	int rc_devidx;			/* child device index for I/O */
@@ -121,6 +123,9 @@ typedef struct raidz_col {
 	int rc_shadow_devidx;		/* for double write during expansion */
 	int rc_shadow_error;		/* for double write during expansion */
 	uint64_t rc_shadow_offset;	/* for double write during expansion */
+	uint64_t rc_latency_val;	/* leaf device scaled latency value */
+	raidz_col_t *rc_latency_next;	/* sorted next column in list */
+	raidz_row_t *rc_raidz_row;
 } raidz_col_t;
 
 typedef struct raidz_row {
@@ -132,6 +137,7 @@ typedef struct raidz_row {
 	int rr_firstdatacol;		/* First data column/parity count */
 	abd_t *rr_abd_empty;		/* dRAID empty sector buffer */
 	int rr_nempty;			/* empty sectors included in parity */
+	raidz_col_t *rr_latency_list_start; /* head of child latency columns */
 #ifdef ZFS_DEBUG
 	uint64_t rr_offset;		/* Logical offset for *_io_verify() */
 	uint64_t rr_size;		/* Physical size for *_io_verify() */

@@ -432,6 +432,8 @@ struct vdev {
 	hrtime_t	vdev_mmp_pending; /* 0 if write finished	*/
 	uint64_t	vdev_mmp_kstat_id;	/* to find kstat entry */
 	uint64_t	vdev_expansion_time;	/* vdev's last expansion time */
+	uint64_t	vdev_outlier_count;	/* peer outlier events */
+	hrtime_t	vdev_read_sit_out_expire;
 	list_node_t	vdev_leaf_node;		/* leaf vdev list */
 
 	/*
